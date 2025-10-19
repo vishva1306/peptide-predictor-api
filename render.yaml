@@ -1,0 +1,9 @@
+services:
+  - type: webService
+    name: peptide-predictor-api
+    runtime: python311
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11
