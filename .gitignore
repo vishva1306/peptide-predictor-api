@@ -8,4 +8,4 @@ build/
 .env
 .DS_Store
 *.log
-node_modules/
+node_modules/api/main.py.backup
