@@ -6,7 +6,7 @@ class Config:
     
     # API Info
     API_TITLE = "Peptide Predictor API"
-    API_VERSION = "2.1.0"
+    API_VERSION = "2.2.0"
     API_DESCRIPTION = "API pour prédire les peptides bioactifs (Coassolo et al. Nature 2025)"
     
     # CORS
@@ -28,10 +28,13 @@ class Config:
     # Acides aminés valides
     VALID_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWY*")
     
-    # Patterns regex SIMPLIFIÉS (sans récursion)
+    # Patterns regex
     REGEX_PATTERNS: Dict[str, str] = {
+        # MODE STRICT : Regex complète du papier Nature (inchangé)
         "strict": r"(?<!K|R)(?:KK|KR|RR|RK)(?=[^RKILPVH]|$)",
-        "permissive": r"(?:KK|KR|RR|RK)(?=[^RKILPVH]|$)"
+        
+        # MODE PERMISSIVE : Simplifié au maximum - juste les motifs de clivage
+        "permissive": r"(?:KK|KR|RR|RK)"
     }
     
     @classmethod
