@@ -14,7 +14,12 @@ class CleavageDetector:
         signal_length: int,
         min_spacing: int
     ) -> List[CleavageSite]:
-        """Détecte les sites de clivage"""
+        """
+        Détecte les sites de clivage
+        
+        STRICT: Applique toutes les contraintes (espacement minimum)
+        PERMISSIVE: Détecte TOUS les sites sans vérifier l'espacement
+        """
         sites = []
         
         try:
@@ -28,8 +33,18 @@ class CleavageDetector:
                 # Position absolue dans la séquence originale
                 absolute_position = signal_length + match.start()
                 
-                # Vérifier l'espacement avec le site précédent
-                if len(sites) == 0 or (absolute_position - sites[-1].position >= min_spacing):
+                # ⭐ DIFFÉRENCE ENTRE LES MODES
+                if mode == "strict":
+                    # Mode STRICT : Vérifier l'espacement minimum entre sites
+                    if len(sites) == 0 or (absolute_position - sites[-1].position >= min_spacing):
+                        site = CleavageSite(
+                            position=absolute_position + 2,  # Position après le motif
+                            motif=match.group(),
+                            index=absolute_position
+                        )
+                        sites.append(site)
+                else:
+                    # Mode PERMISSIVE : Accepter TOUS les sites détectés
                     site = CleavageSite(
                         position=absolute_position + 2,  # Position après le motif
                         motif=match.group(),

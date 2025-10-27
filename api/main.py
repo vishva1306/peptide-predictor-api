@@ -121,7 +121,8 @@ async def analyze(request: AnalysisRequest):
             cleavage_sites=cleavage_sites,
             signal_length=request.signalPeptideLength,
             min_spacing=request.minCleavageSpacing,
-            min_sites=request.minCleavageSites
+            min_sites=request.minCleavageSites,
+            mode=request.mode  # ⭐ AJOUT DU PARAMÈTRE MODE
         )
         
         # 4. Calculer bioactivité (parallèle)
