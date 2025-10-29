@@ -37,6 +37,7 @@ class AnalysisResponse(BaseModel):
     topPeptides: List[PeptideResult]
     cleavageSites: List[CleavageSite] = []
     mode: str
+    proteinId: str = ""  # ⭐ NOUVEAU champ
 
 class HealthResponse(BaseModel):
     """État de santé"""

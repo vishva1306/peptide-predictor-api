@@ -100,8 +100,8 @@ async def analyze(request: AnalysisRequest):
     5. Tri et sélection top candidats
     """
     try:
-        # 1. Nettoyer et valider
-        clean_seq = SequenceValidator.clean_sequence(request.sequence)
+        # 1. Nettoyer et valider (⭐ récupère maintenant l'ID)
+        clean_seq, protein_id = SequenceValidator.clean_sequence(request.sequence)
         SequenceValidator.validate_characters(clean_seq)
         
         min_length = request.signalPeptideLength + 10
@@ -122,7 +122,7 @@ async def analyze(request: AnalysisRequest):
             signal_length=request.signalPeptideLength,
             min_spacing=request.minCleavageSpacing,
             min_sites=request.minCleavageSites,
-            mode=request.mode  # ⭐ AJOUT DU PARAMÈTRE MODE
+            mode=request.mode
         )
         
         # 4. Calculer bioactivité (parallèle)
@@ -146,7 +146,7 @@ async def analyze(request: AnalysisRequest):
         # 7. Stats
         peptides_in_range = sum(1 for p in peptides if p['inRange'])
         
-        # 8. Construire réponse
+        # 8. Construire réponse (⭐ ajoute proteinId)
         return AnalysisResponse(
             sequenceLength=len(clean_seq),
             cleavageSitesCount=len(cleavage_sites),
@@ -154,7 +154,8 @@ async def analyze(request: AnalysisRequest):
             peptidesInRange=peptides_in_range,
             topPeptides=[PeptideResult(**p) for p in top_peptides],
             cleavageSites=cleavage_sites,
-            mode=request.mode
+            mode=request.mode,
+            proteinId=protein_id  # ⭐ NOUVEAU
         )
     
     except HTTPException:
