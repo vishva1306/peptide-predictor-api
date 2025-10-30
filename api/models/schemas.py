@@ -1,6 +1,6 @@
 """Schémas Pydantic pour validation"""
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Literal
+from pydantic import BaseModel, Field
+from typing import List, Literal, Optional
 from api.config import config
 
 class AnalysisRequest(BaseModel):
@@ -27,6 +27,12 @@ class PeptideResult(BaseModel):
     cleavageMotif: str
     bioactivityScore: float = Field(ge=0, le=100)
     bioactivitySource: Literal["api", "heuristic", "none"]
+    
+    # ⭐ NOUVEAUX CHAMPS UNIPROT (3 statuts)
+    uniprotStatus: Literal["exact", "partial", "unknown"] = "unknown"
+    uniprotName: Optional[str] = None
+    uniprotNote: Optional[str] = None
+    uniprotAccession: Optional[str] = None
 
 class AnalysisResponse(BaseModel):
     """Résultat d'analyse"""
@@ -37,7 +43,7 @@ class AnalysisResponse(BaseModel):
     topPeptides: List[PeptideResult]
     cleavageSites: List[CleavageSite] = []
     mode: str
-    proteinId: str = ""  # ⭐ NOUVEAU champ
+    proteinId: str = ""
 
 class HealthResponse(BaseModel):
     """État de santé"""

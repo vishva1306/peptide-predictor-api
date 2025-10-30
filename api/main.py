@@ -15,7 +15,8 @@ from api.services import (
     SequenceValidator,
     CleavageDetector,
     PeptideExtractor,
-    BioactivityPredictor
+    BioactivityPredictor,
+    UniProtChecker
 )
 
 # ==================== APP ====================
@@ -78,6 +79,12 @@ async def stats():
             "fallback": "Heuristic scoring",
             "note": "Le papier original utilise RT-qPCR expérimental"
         },
+        "uniprot": {
+            "enabled": True,
+            "description": "Vérification automatique des peptides connus",
+            "database": "UniProtKB/Swiss-Prot (reviewed entries only)",
+            "statuses": ["exact", "partial", "unknown"]
+        },
         "default_params": {
             "signalPeptideLength": config.DEFAULT_SIGNAL_PEPTIDE_LENGTH,
             "minCleavageSites": config.DEFAULT_MIN_CLEAVAGE_SITES,
@@ -97,10 +104,11 @@ async def analyze(request: AnalysisRequest):
     2. Détection sites de clivage PCSK1/3
     3. Extraction peptides
     4. Prédiction bioactivité (parallèle)
-    5. Tri et sélection top candidats
+    5. Vérification UniProt (parallèle)
+    6. Tri et sélection top candidats
     """
     try:
-        # 1. Nettoyer et valider (⭐ récupère maintenant l'ID)
+        # 1. Nettoyer et valider
         clean_seq, protein_id = SequenceValidator.clean_sequence(request.sequence)
         SequenceValidator.validate_characters(clean_seq)
         
@@ -125,28 +133,43 @@ async def analyze(request: AnalysisRequest):
             mode=request.mode
         )
         
-        # 4. Calculer bioactivité (parallèle)
+        # 4. Session aiohttp unique pour bioactivité + UniProt
         async with aiohttp.ClientSession() as session:
+            # Calculer bioactivité (parallèle)
             bioactivity_results = await BioactivityPredictor.predict_batch(
                 [p['sequence'] for p in peptides],
                 session
             )
+            
+            # ⭐ 5. Vérifier UniProt (parallèle avec rate limiting)
+            uniprot_results = await UniProtChecker.check_batch(
+                [p['sequence'] for p in peptides],
+                session,
+                protein_id=protein_id
+            )
         
-        # Assigner scores
+        # Assigner scores bioactivité
         for peptide, (score, source) in zip(peptides, bioactivity_results):
             peptide['bioactivityScore'] = score
             peptide['bioactivitySource'] = source
         
-        # 5. Trier par bioactivité
+        # ⭐ Assigner données UniProt
+        for peptide, uniprot_data in zip(peptides, uniprot_results):
+            peptide['uniprotStatus'] = uniprot_data['uniprotStatus']
+            peptide['uniprotName'] = uniprot_data['uniprotName']
+            peptide['uniprotNote'] = uniprot_data['uniprotNote']
+            peptide['uniprotAccession'] = uniprot_data['uniprotAccession']
+        
+        # 6. Trier par bioactivité
         peptides.sort(key=lambda x: x['bioactivityScore'], reverse=True)
         
-        # 6. Top 5 peptides
+        # 7. Top 5 peptides
         top_peptides = peptides[:5]
         
-        # 7. Stats
+        # 8. Stats
         peptides_in_range = sum(1 for p in peptides if p['inRange'])
         
-        # 8. Construire réponse (⭐ ajoute proteinId)
+        # 9. Construire réponse
         return AnalysisResponse(
             sequenceLength=len(clean_seq),
             cleavageSitesCount=len(cleavage_sites),
@@ -155,7 +178,7 @@ async def analyze(request: AnalysisRequest):
             topPeptides=[PeptideResult(**p) for p in top_peptides],
             cleavageSites=cleavage_sites,
             mode=request.mode,
-            proteinId=protein_id  # ⭐ NOUVEAU
+            proteinId=protein_id
         )
     
     except HTTPException:
