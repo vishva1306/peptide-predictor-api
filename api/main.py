@@ -16,8 +16,10 @@ from api.services import (
     CleavageDetector,
     PeptideExtractor,
     BioactivityPredictor,
-    UniProtChecker
+    UniProtChecker,
+    protein_db
 )
+from api.routes import proteins
 
 # ==================== APP ====================
 
@@ -35,6 +37,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ⭐ Inclure routes protéines
+app.include_router(proteins.router, prefix="/api", tags=["proteins"])
+
 # ==================== ROUTES ====================
 
 @app.get("/")
@@ -44,6 +49,8 @@ async def root():
         "version": config.API_VERSION,
         "paper": "Coassolo et al. Nature 2025",
         "endpoints": {
+            "search_proteins": "GET /api/proteins/search?q=POMC",
+            "get_protein": "GET /api/proteins/P01189",
             "analyze": "POST /analyze",
             "health": "GET /health",
             "stats": "GET /stats",
@@ -85,10 +92,17 @@ async def stats():
             "database": "UniProtKB/Swiss-Prot (reviewed entries only)",
             "statuses": ["exact", "partial", "unknown"]
         },
+        "protein_search": {
+            "enabled": True,
+            "description": "Recherche par gene name ou UniProt ID",
+            "scope": "Human secreted proteins only",
+            "cache": "24 hours"
+        },
         "default_params": {
             "signalPeptideLength": config.DEFAULT_SIGNAL_PEPTIDE_LENGTH,
             "minCleavageSites": config.DEFAULT_MIN_CLEAVAGE_SITES,
-            "minCleavageSpacing": config.DEFAULT_MIN_CLEAVAGE_SPACING
+            "minCleavageSpacing": config.DEFAULT_MIN_CLEAVAGE_SPACING,
+            "maxPeptideLength": 100
         },
         "optimal_range": f"{config.OPTIMAL_PEPTIDE_MIN_LENGTH}-{config.OPTIMAL_PEPTIDE_MAX_LENGTH} aa"
     }
@@ -97,25 +111,46 @@ async def stats():
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze(request: AnalysisRequest):
     """
-    Analyse une séquence protéique pour prédire les peptides bioactifs.
+    Analyse une protéine pour prédire les peptides bioactifs
     
     Pipeline:
-    1. Validation et nettoyage
-    2. Détection sites de clivage PCSK1/3
-    3. Extraction peptides
-    4. Prédiction bioactivité (parallèle)
-    5. Vérification UniProt (parallèle)
-    6. Tri et sélection top candidats
+    1. Récupération de la protéine depuis UniProt (avec cache)
+    2. Validation de la séquence
+    3. Détection sites de clivage PCSK1/3
+    4. Extraction peptides (avec filtre maxPeptideLength)
+    5. Prédiction bioactivité (parallèle)
+    6. Vérification UniProt (parallèle)
+    7. Tri et sélection top candidats
     """
     try:
-        # 1. Nettoyer et valider
-        clean_seq, protein_id = SequenceValidator.clean_sequence(request.sequence)
-        SequenceValidator.validate_characters(clean_seq)
+        # 1. Récupérer la protéine depuis UniProt
+        async with aiohttp.ClientSession() as session:
+            protein = await protein_db.get_protein(request.proteinId, session)
         
+        if not protein:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Protein {request.proteinId} not found or not secreted"
+            )
+        
+        # 2. Extraire la séquence
+        clean_seq = protein["sequence"]
+        gene_name = protein["geneName"]
+        protein_name = protein["proteinName"]
+        
+        # Construire protein_id pour UniProt check
+        protein_id_header = f"SP|{protein['accession']}|{gene_name}_HUMAN {protein_name}"
+        
+        print(f"\n🧬 Analyzing protein: {gene_name} ({protein['accession']})")
+        print(f"📊 Length: {protein['length']} aa")
+        print(f"📋 Parameters: signal={request.signalPeptideLength}, min_sites={request.minCleavageSites}, spacing={request.minCleavageSpacing}, max_len={request.maxPeptideLength}")
+        
+        # 3. Valider la séquence
+        SequenceValidator.validate_characters(clean_seq)
         min_length = request.signalPeptideLength + 10
         SequenceValidator.validate_length(clean_seq, min_length)
         
-        # 2. Détecter sites de clivage
+        # 4. Détecter sites de clivage
         cleavage_sites = CleavageDetector.find_sites(
             sequence=clean_seq,
             mode=request.mode,
@@ -123,7 +158,7 @@ async def analyze(request: AnalysisRequest):
             min_spacing=request.minCleavageSpacing
         )
         
-        # 3. Extraire peptides
+        # 5. Extraire peptides
         peptides = PeptideExtractor.extract(
             sequence=clean_seq,
             cleavage_sites=cleavage_sites,
@@ -133,7 +168,18 @@ async def analyze(request: AnalysisRequest):
             mode=request.mode
         )
         
-        # 4. Session aiohttp unique pour bioactivité + UniProt
+        # ⭐ 5.5. Filtrer par maxPeptideLength
+        peptides_filtered = [
+            p for p in peptides
+            if p['length'] <= request.maxPeptideLength
+        ]
+        
+        print(f"📊 Peptides before max filter: {len(peptides)}")
+        print(f"📊 Peptides after max filter: {len(peptides_filtered)}")
+        
+        peptides = peptides_filtered
+        
+        # 6. Session aiohttp pour bioactivité + UniProt
         async with aiohttp.ClientSession() as session:
             # Calculer bioactivité (parallèle)
             bioactivity_results = await BioactivityPredictor.predict_batch(
@@ -141,35 +187,35 @@ async def analyze(request: AnalysisRequest):
                 session
             )
             
-            # ⭐ 5. Vérifier UniProt (parallèle avec rate limiting)
+            # Vérifier UniProt (parallèle)
             uniprot_results = await UniProtChecker.check_batch(
                 [p['sequence'] for p in peptides],
                 session,
-                protein_id=protein_id
+                protein_id=protein_id_header
             )
         
-        # Assigner scores bioactivité
+        # 7. Assigner scores bioactivité
         for peptide, (score, source) in zip(peptides, bioactivity_results):
             peptide['bioactivityScore'] = score
             peptide['bioactivitySource'] = source
         
-        # ⭐ Assigner données UniProt
+        # 8. Assigner données UniProt
         for peptide, uniprot_data in zip(peptides, uniprot_results):
             peptide['uniprotStatus'] = uniprot_data['uniprotStatus']
             peptide['uniprotName'] = uniprot_data['uniprotName']
             peptide['uniprotNote'] = uniprot_data['uniprotNote']
             peptide['uniprotAccession'] = uniprot_data['uniprotAccession']
         
-        # 6. Trier par bioactivité
+        # 9. Trier par bioactivité
         peptides.sort(key=lambda x: x['bioactivityScore'], reverse=True)
         
-        # 7. Top 5 peptides
+        # 10. Top 5 peptides
         top_peptides = peptides[:5]
         
-        # 8. Stats
+        # 11. Stats
         peptides_in_range = sum(1 for p in peptides if p['inRange'])
         
-        # 9. Construire réponse
+        # 12. Construire réponse
         return AnalysisResponse(
             sequenceLength=len(clean_seq),
             cleavageSitesCount=len(cleavage_sites),
@@ -178,7 +224,9 @@ async def analyze(request: AnalysisRequest):
             topPeptides=[PeptideResult(**p) for p in top_peptides],
             cleavageSites=cleavage_sites,
             mode=request.mode,
-            proteinId=protein_id
+            proteinId=protein['accession'],
+            geneName=gene_name,
+            proteinName=protein_name
         )
     
     except HTTPException:
