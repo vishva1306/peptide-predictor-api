@@ -9,6 +9,7 @@ from api.models.schemas import (
     AnalysisRequest,
     AnalysisResponse,
     PeptideResult,
+    PTMResult,
     HealthResponse
 )
 from api.services import (
@@ -17,7 +18,8 @@ from api.services import (
     PeptideExtractor,
     BioactivityPredictor,
     UniProtChecker,
-    protein_db
+    protein_db,
+    ptm_detector
 )
 from api.routes import proteins
 
@@ -37,7 +39,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ⭐ Inclure routes protéines
 app.include_router(proteins.router, prefix="/api", tags=["proteins"])
 
 # ==================== ROUTES ====================
@@ -83,8 +84,20 @@ async def stats():
         },
         "bioactivity": {
             "primary": "PeptideRanker API (parallel)",
-            "fallback": "Heuristic scoring",
+            "fallback": "Lab ML Bioactivity Model",
             "note": "Le papier original utilise RT-qPCR expérimental"
+        },
+        "ptms": {
+            "enabled": True,
+            "count": 6,
+            "types": [
+                "C-terminal amidation",
+                "N-terminal pyroglutamate",
+                "Disulfide bonds",
+                "Ghrelin acylation",
+                "Tyrosine O-sulfation",
+                "N-glycosylation"
+            ]
         },
         "uniprot": {
             "enabled": True,
@@ -120,7 +133,8 @@ async def analyze(request: AnalysisRequest):
     4. Extraction peptides (avec filtre maxPeptideLength)
     5. Prédiction bioactivité (parallèle)
     6. Vérification UniProt (parallèle)
-    7. Tri et sélection top candidats
+    7. Détection PTMs
+    8. Tri et sélection top candidats
     """
     try:
         # 1. Récupérer la protéine depuis UniProt
@@ -138,7 +152,6 @@ async def analyze(request: AnalysisRequest):
         gene_name = protein["geneName"]
         protein_name = protein["proteinName"]
         
-        # Construire protein_id pour UniProt check
         protein_id_header = f"SP|{protein['accession']}|{gene_name}_HUMAN {protein_name}"
         
         print(f"\n🧬 Analyzing protein: {gene_name} ({protein['accession']})")
@@ -168,7 +181,7 @@ async def analyze(request: AnalysisRequest):
             mode=request.mode
         )
         
-        # ⭐ 5.5. Filtrer par maxPeptideLength
+        # 5.5. Filtrer par maxPeptideLength
         peptides_filtered = [
             p for p in peptides
             if p['length'] <= request.maxPeptideLength
@@ -206,16 +219,53 @@ async def analyze(request: AnalysisRequest):
             peptide['uniprotNote'] = uniprot_data['uniprotNote']
             peptide['uniprotAccession'] = uniprot_data['uniprotAccession']
         
-        # 9. Trier par bioactivité
+        # 9. Détecter PTMs pour chaque peptide
+        print(f"\n🔬 Detecting PTMs for {len(peptides)} peptides...")
+        for idx, peptide in enumerate(peptides, 1):
+            try:
+                # Vérifier que start et end sont des int
+                if not isinstance(peptide['start'], int) or not isinstance(peptide['end'], int):
+                    print(f"  ⚠️ Peptide #{idx}: Invalid start/end types")
+                    peptide['ptms'] = []
+                    peptide['modifiedSequence'] = None
+                    continue
+                
+                detected_ptms = ptm_detector.detect_all_ptms(
+                    peptide_sequence=peptide['sequence'],
+                    full_protein_sequence=clean_seq,
+                    peptide_start=peptide['start'],
+                    peptide_end=peptide['end']
+                )
+                
+                peptide['ptms'] = detected_ptms
+                
+                # Générer séquence modifiée si PTMs détectées
+                if detected_ptms:
+                    peptide['modifiedSequence'] = ptm_detector.generate_modified_sequence(
+                        peptide['sequence'],
+                        detected_ptms
+                    )
+                    print(f"  ✅ Peptide #{idx}: {len(detected_ptms)} PTMs detected")
+                else:
+                    peptide['modifiedSequence'] = None
+                    
+            except Exception as e:
+                print(f"  ❌ Peptide #{idx}: PTM detection error: {e}")
+                import traceback
+                traceback.print_exc()
+                peptide['ptms'] = []
+                peptide['modifiedSequence'] = None
+        
+        # 10. Trier par bioactivité
         peptides.sort(key=lambda x: x['bioactivityScore'], reverse=True)
         
-        # 10. Top 5 peptides
+        # 11. Top 5 peptides
         top_peptides = peptides[:5]
         
-        # 11. Stats
+        # 12. Stats
         peptides_in_range = sum(1 for p in peptides if p['inRange'])
         
-        # 12. Construire réponse
+        # 13. Construire réponse
         return AnalysisResponse(
             sequenceLength=len(clean_seq),
             cleavageSitesCount=len(cleavage_sites),
@@ -232,6 +282,9 @@ async def analyze(request: AnalysisRequest):
     except HTTPException:
         raise
     except Exception as e:
+        print(f"❌ Analysis error: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail=f"Erreur interne: {str(e)}"
