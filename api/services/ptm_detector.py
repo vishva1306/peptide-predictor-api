@@ -109,8 +109,6 @@ class PTMDetector:
             return None
         
         # Convertir peptide_end (1-indexed) en index Python (0-indexed)
-        # peptide_end pointe sur le dernier aa du peptide (1-indexed)
-        # Pour obtenir l'aa APRÈS, on utilise peptide_end directement (car 0-indexed commence à 0)
         after_peptide_idx = peptide_end
         
         # Sécurité : vérifier qu'on ne dépasse pas la longueur
@@ -139,7 +137,8 @@ class PTMDetector:
                     'enzyme': 'PAM',
                     'motif': motif,
                     'position': 'C-terminus',
-                    'description': f'{motif} → -NH₂'
+                    'description': f'{motif} → -NH₂',
+                    'removes_g': True
                 }
         
         return None
@@ -299,60 +298,85 @@ class PTMDetector:
             return str(sequence)
         
         modified = list(sequence)
-        offset = 0
         
-        # Trier les PTMs par position (pour gérer les insertions)
+        # ⭐ ÉTAPE 1 : Vérifier si C-terminal amidation et enlever le G
+        has_c_amidation = any(
+            ptm.get('type') == 'C-terminal amidation' and ptm.get('removes_g', False)
+            for ptm in ptms
+        )
+        
+        if has_c_amidation and modified and modified[-1] == 'G':
+            modified = modified[:-1]
+            print(f"🔵 C-amidation: G terminal enlevé → séquence devient {''.join(modified)}")
+        
+        # ⭐ ÉTAPE 2 : Trier les PTMs par position (pour ordre d'application)
         sorted_ptms = sorted(
             [p for p in ptms if isinstance(p.get('position'), int)],
             key=lambda x: x.get('position', 0)
         )
         
-        # Appliquer les modifications
+        # ⭐ ÉTAPE 3 : Appliquer les modifications avec tracking d'offset
+        # Tracker les cystéines déjà modifiées pour disulfide bonds
+        modified_cys_indices = set()
+        
         for ptm in ptms:
             ptm_type = ptm.get('type', '')
             
             if ptm_type == 'C-terminal amidation':
-                # Ajouter -NH₂ au C-terminus
+                # Ajouter -NH₂ au C-terminus (le G a déjà été enlevé)
                 modified.append('-NH₂')
+                print(f"🔵 C-amidation: -NH₂ ajouté")
             
             elif ptm_type == 'N-terminal pyroglutamate':
                 # Remplacer Q ou E par pGlu
                 if len(modified) > 0:
+                    old_aa = modified[0]
                     modified[0] = 'pGlu'
-            
-            elif ptm_type == 'Tyrosine O-sulfation':
-                pos = ptm.get('position', 0) - 1 + offset
-                if 0 <= pos < len(modified) and modified[pos] == 'Y':
-                    modified[pos] = 'Y(SO₃)'
-                    offset += 5
-            
-            elif ptm_type == 'N-glycosylation':
-                pos = ptm.get('position', 0) - 1 + offset
-                if 0 <= pos < len(modified) and modified[pos] == 'N':
-                    modified[pos] = 'N(GlcNAc)'
-                    offset += 8
+                    print(f"🟢 N-pGlu: {old_aa} → pGlu au N-terminus")
             
             elif ptm_type == 'Ghrelin acylation':
-                # Ajouter octanoyl sur G
-                if len(modified) > 0:
+                # Ajouter octanoyl sur G au début
+                if len(modified) > 0 and modified[0] == 'G':
                     modified[0] = 'G(C8:0)'
-                    offset += 6
+                    print(f"🟣 Ghrelin: G → G(C8:0)")
             
             elif ptm_type == 'Disulfide bonds':
-                # Numéroter les cystéines
+                # Numéroter toutes les cystéines
                 positions = ptm.get('positions', [])
-                cys_offset = 0
-                for idx, cys_pos in enumerate(positions, 1):
-                    if not isinstance(cys_pos, int):
-                        continue
-                    pos = cys_pos - 1 + cys_offset
-                    if 0 <= pos < len(modified):
-                        if modified[pos] == 'C' or modified[pos].startswith('C'):
-                            modified[pos] = f'C{idx}'
-                            if idx > 1:
-                                cys_offset += 1
+                print(f"🔴 Disulfide: Numérotation de {len(positions)} cystéines aux positions {positions}")
+                
+                cys_found = 0
+                for i, aa in enumerate(modified):
+                    if aa == 'C' and i not in modified_cys_indices:
+                        cys_found += 1
+                        modified[i] = f'C{cys_found}'
+                        modified_cys_indices.add(i)
+                        if cys_found >= len(positions):
+                            break
+            
+            elif ptm_type == 'Tyrosine O-sulfation':
+                # Trouver la position de la tyrosine
+                pos = ptm.get('position', 0) - 1  # Convertir en 0-indexed
+                
+                if 0 <= pos < len(modified):
+                    # Vérifier si c'est bien une Y
+                    if modified[pos] == 'Y':
+                        modified[pos] = 'Y(SO₃)'
+                        print(f"🟡 Y-sulfation: Y{pos+1} → Y(SO₃)")
+            
+            elif ptm_type == 'N-glycosylation':
+                # Trouver la position de l'asparagine
+                pos = ptm.get('position', 0) - 1  # Convertir en 0-indexed
+                
+                if 0 <= pos < len(modified):
+                    # Vérifier si c'est bien une N
+                    if modified[pos] == 'N':
+                        modified[pos] = 'N(GlcNAc)'
+                        print(f"🟠 N-glyco: N{pos+1} → N(GlcNAc)")
         
-        return ''.join(modified)
+        result = ''.join(modified)
+        print(f"✅ Séquence finale modifiée : {result}")
+        return result
 
 
 # Instance globale
