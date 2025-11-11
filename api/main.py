@@ -1,19 +1,11 @@
-"""API FastAPI refactorisée avec support batch"""
+"""FastAPI application principale"""
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, Union, List
+import asyncio
 import aiohttp
-from typing import Union, List
 
-from api.config import config
-from api.models.schemas import (
-    AnalysisRequest,
-    AnalysisResponse,
-    BatchAnalysisResponse,
-    PeptideResult,
-    PTMResult,
-    HealthResponse
-)
 from api.services import (
     SequenceValidator,
     CleavageDetector,
@@ -21,161 +13,226 @@ from api.services import (
     BioactivityPredictor,
     UniProtChecker,
     protein_db,
-    ptm_detector
-)
-from api.services.batch_analyzer import batch_analyzer
-from api.routes import proteins
-
-# ==================== APP ====================
-
-app = FastAPI(
-    title=config.API_TITLE,
-    version=config.API_VERSION,
-    description=config.API_DESCRIPTION
+    ptm_detector,
+    batch_analyzer,
+    fasta_parser
 )
 
+app = FastAPI(title="Peptide Predictor API")
+
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.CORS_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(proteins.router, prefix="/api", tags=["proteins"])
 
-# ==================== ROUTES ====================
+# ==================== MODELS ====================
+
+class AnalysisRequest(BaseModel):
+    """Modèle pour la requête d'analyse"""
+    proteinId: Optional[Union[str, List[str]]] = None
+    fastaSequence: Optional[str] = None
+    fastaHeader: Optional[str] = None
+    mode: str = Field(default="permissive")
+    signalPeptideLength: int = Field(default=20, ge=0, le=100)
+    minCleavageSites: int = Field(default=4, ge=1, le=10)
+    minCleavageSpacing: int = Field(default=5, ge=1, le=20)
+    maxPeptideLength: int = Field(default=100, ge=10, le=500)
+
+    @field_validator('mode')
+    @classmethod
+    def validate_mode(cls, v):
+        if v not in ['strict', 'permissive']:
+            raise ValueError('Mode must be "strict" or "permissive"')
+        return v
+    
+    @field_validator('fastaSequence')
+    @classmethod
+    def validate_input(cls, v, info):
+        # Au moins un des deux doit être fourni
+        if not v and not info.data.get('proteinId'):
+            raise ValueError('Either proteinId or fastaSequence must be provided')
+        return v
+
+
+# ==================== ENDPOINTS ====================
 
 @app.get("/")
 async def root():
     return {
-        "message": f"{config.API_TITLE} v{config.API_VERSION}",
-        "version": config.API_VERSION,
-        "paper": "Coassolo et al. Nature 2025",
+        "message": "Peptide Predictor API",
+        "version": "2.0.0",
         "endpoints": {
-            "search_proteins": "GET /api/proteins/search?q=POMC",
-            "get_protein": "GET /api/proteins/P01189",
-            "analyze": "POST /analyze (single or batch)",
-            "health": "GET /health",
-            "stats": "GET /stats",
-            "docs": "/docs"
+            "/analyze": "POST - Analyze protein(s) or FASTA sequence",
+            "/api/proteins/search": "GET - Search proteins",
+            "/api/proteins/{accession}": "GET - Get protein details"
         }
     }
 
 
-@app.get("/health", response_model=HealthResponse)
-async def health():
-    """Vérifie l'état de santé de l'API"""
-    return HealthResponse(
-        status="ok",
-        timestamp=datetime.now().isoformat(),
-        version=config.API_VERSION,
-        peptideranker_available=True
-    )
-
-
-@app.get("/stats")
-async def stats():
-    """Statistiques de l'API"""
-    return {
-        "api": config.API_TITLE,
-        "version": config.API_VERSION,
-        "paper": "Coassolo et al. Nature 2025 - doi:10.1038/s41586-025-08683-y",
-        "modes": {
-            "strict": "Regex complète du papier (recommandé)",
-            "permissive": "Détection simplifiée (plus sensible)"
-        },
-        "batch_analysis": {
-            "enabled": True,
-            "max_proteins": 15,
-            "sequential": True,
-            "auto_params": True
-        },
-        "bioactivity": {
-            "primary": "PeptideRanker API (parallel)",
-            "fallback": "Lab ML Bioactivity Model",
-            "note": "Le papier original utilise RT-qPCR expérimental"
-        },
-        "ptms": {
-            "enabled": True,
-            "count": 6,
-            "types": [
-                "C-terminal amidation",
-                "N-terminal pyroglutamate",
-                "Disulfide bonds",
-                "Ghrelin acylation",
-                "Tyrosine O-sulfation",
-                "N-glycosylation"
-            ]
-        },
-        "uniprot": {
-            "enabled": True,
-            "description": "Vérification automatique des peptides connus",
-            "database": "UniProtKB/Swiss-Prot (reviewed entries only)",
-            "statuses": ["exact", "partial", "unknown"]
-        },
-        "protein_search": {
-            "enabled": True,
-            "description": "Recherche par gene name ou UniProt ID",
-            "scope": "Human secreted proteins only",
-            "cache": "24 hours"
-        },
-        "default_params": {
-            "signalPeptideLength": config.DEFAULT_SIGNAL_PEPTIDE_LENGTH,
-            "minCleavageSites": config.DEFAULT_MIN_CLEAVAGE_SITES,
-            "minCleavageSpacing": config.DEFAULT_MIN_CLEAVAGE_SPACING,
-            "maxPeptideLength": 100
-        },
-        "optimal_range": f"{config.OPTIMAL_PEPTIDE_MIN_LENGTH}-{config.OPTIMAL_PEPTIDE_MAX_LENGTH} aa"
-    }
-
-
 @app.post("/analyze")
-async def analyze(request: AnalysisRequest):
+async def analyze_protein(request: AnalysisRequest):
     """
-    Analyse une ou plusieurs protéines
+    Analyse une ou plusieurs protéines depuis UniProt OU une séquence FASTA
     
-    Single mode: proteinId = "P01189"
-    Batch mode: proteinId = ["P01189", "P01308", "Q9UBU3"]
-    
-    Pipeline Single:
-    1. Récupération de la protéine depuis UniProt (avec cache)
-    2. Validation de la séquence
-    3. Détection sites de clivage PCSK1/3
-    4. Extraction peptides (avec filtre maxPeptideLength)
-    5. Prédiction bioactivité (parallèle)
-    6. Vérification UniProt (parallèle)
-    7. Détection PTMs
-    8. Tri et sélection top candidats
-    
-    Pipeline Batch:
-    1. Vérification existence des protéines
-    2. Analyse séquentielle avec paramètres auto-recommandés
-    3. Retour résultats groupés
+    Modes:
+    1. Single UniProt: proteinId = "P01189"
+    2. Batch UniProt: proteinId = ["P01189", "P01308", "Q9UBU3"]
+    3. FASTA: fastaSequence = "MALWMR..." (avec fastaHeader optionnel)
     """
-    try:
-        # Déterminer si single ou batch
-        is_batch = isinstance(request.proteinId, list)
+    
+    # ==================== MODE FASTA ====================
+    if request.fastaSequence:
+        print("\n🧬 FASTA MODE DETECTED")
         
-        if is_batch:
-            print(f"\n🔬 BATCH MODE: Analyzing {len(request.proteinId)} proteins")
+        try:
+            # Parser la séquence FASTA
+            fasta_data = fasta_parser.parse(request.fastaSequence)
+            sequence = fasta_data['sequence']
             
-            # Analyse batch
-            batch_results = await batch_analyzer.analyze_batch(
-                protein_ids=request.proteinId,
+            print(f"📊 Sequence length: {len(sequence)} aa")
+            print(f"📋 Header: {fasta_data['header']}")
+            print(f"🆔 ID: {fasta_data['id']}")
+            print(f"📝 Name: {fasta_data['name']}")
+            
+            # Valider la séquence
+            is_valid, error_msg = fasta_parser.validate_sequence(sequence)
+            if not is_valid:
+                raise HTTPException(status_code=400, detail=error_msg)
+            
+            # Détection des sites de clivage
+            cleavage_sites = CleavageDetector.find_sites(
+                sequence=sequence,
+                mode=request.mode,
+                signal_length=request.signalPeptideLength,
+                min_spacing=request.minCleavageSpacing
+            )
+            
+            print(f"✂️ Found {len(cleavage_sites)} cleavage sites")
+            
+            # Extraction des peptides
+            peptides = PeptideExtractor.extract(
+                sequence=sequence,
+                cleavage_sites=cleavage_sites,
+                signal_length=request.signalPeptideLength,
+                min_spacing=request.minCleavageSpacing,
+                min_sites=request.minCleavageSites,
                 mode=request.mode
             )
             
-            return BatchAnalysisResponse(**batch_results)
-        
-        else:
-            print(f"\n🔬 SINGLE MODE: Analyzing {request.proteinId}")
+            # Filtrer par longueur max
+            peptides = [p for p in peptides if p['length'] <= request.maxPeptideLength]
             
-            # ==================== SINGLE MODE ====================
+            print(f"🧬 Extracted {len(peptides)} peptides")
             
-            # 1. Récupérer la protéine depuis UniProt
+            if len(peptides) == 0:
+                return {
+                    "sequenceLength": len(sequence),
+                    "cleavageSitesCount": len(cleavage_sites),
+                    "peptides": [],
+                    "peptidesInRange": 0,
+                    "proteinId": fasta_data['id'] or "Custom",
+                    "geneName": fasta_data['name'] or "FASTA",
+                    "proteinName": fasta_data['name'] or "Custom FASTA Sequence",
+                    "mode": request.mode,
+                    "isFasta": True,
+                    "fastaHeader": fasta_data['header']
+                }
+            
+            # Prédiction bioactivité (parallèle)
             async with aiohttp.ClientSession() as session:
-                protein = await protein_db.get_protein(request.proteinId, session)
+                bioactivity_results = await BioactivityPredictor.predict_batch(
+                    [p['sequence'] for p in peptides],
+                    session
+                )
+            
+            # Assigner scores
+            for peptide, (score, source) in zip(peptides, bioactivity_results):
+                peptide['bioactivityScore'] = score
+                peptide['bioactivitySource'] = source
+                # Pas de vérification UniProt pour FASTA
+                peptide['uniprotStatus'] = 'n/a'
+                peptide['uniprotName'] = None
+                peptide['uniprotNote'] = None
+                peptide['uniprotAccession'] = None
+            
+            # Détection PTMs
+            print(f"🔬 Detecting PTMs for {len(peptides)} peptides...")
+            for idx, peptide in enumerate(peptides, 1):
+                try:
+                    detected_ptms = ptm_detector.detect_all_ptms(
+                        peptide_sequence=peptide['sequence'],
+                        full_protein_sequence=sequence,
+                        peptide_start=peptide['start'],
+                        peptide_end=peptide['end']
+                    )
+                    
+                    peptide['ptms'] = detected_ptms
+                    
+                    if detected_ptms:
+                        peptide['modifiedSequence'] = ptm_detector.generate_modified_sequence(
+                            peptide['sequence'],
+                            detected_ptms
+                        )
+                    else:
+                        peptide['modifiedSequence'] = None
+                        
+                except Exception as e:
+                    print(f"❌ PTM detection error for peptide {idx}: {e}")
+                    peptide['ptms'] = []
+                    peptide['modifiedSequence'] = None
+            
+            # Trier par bioactivité
+            peptides.sort(key=lambda x: x['bioactivityScore'], reverse=True)
+            
+            # Stats
+            peptides_in_range = sum(1 for p in peptides if p['inRange'])
+            
+            return {
+                "sequenceLength": len(sequence),
+                "cleavageSitesCount": len(cleavage_sites),
+                "peptides": peptides,
+                "peptidesInRange": peptides_in_range,
+                "proteinId": fasta_data['id'] or "Custom",
+                "geneName": fasta_data['name'] or "FASTA",
+                "proteinName": fasta_data['name'] or "Custom FASTA Sequence",
+                "cleavageSites": [
+                    {"position": site.position, "motif": site.motif, "index": site.index}
+                    for site in cleavage_sites
+                ],
+                "mode": request.mode,
+                "isFasta": True,
+                "fastaHeader": fasta_data['header']
+            }
+            
+        except Exception as e:
+            print(f"❌ FASTA analysis error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    # ==================== MODE UNIPROT (BATCH) ====================
+    elif isinstance(request.proteinId, list):
+        print(f"\n📦 BATCH MODE: {len(request.proteinId)} proteins")
+        
+        result = await batch_analyzer.analyze_batch(
+            protein_ids=request.proteinId,
+            mode=request.mode
+        )
+        
+        return result
+    
+    # ==================== MODE UNIPROT (SINGLE) ====================
+    elif request.proteinId:
+        print(f"\n🔬 SINGLE MODE: {request.proteinId}")
+        
+        async with aiohttp.ClientSession() as session:
+            # Récupérer la protéine
+            protein = await protein_db.get_protein(request.proteinId, session)
             
             if not protein:
                 raise HTTPException(
@@ -183,23 +240,19 @@ async def analyze(request: AnalysisRequest):
                     detail=f"Protein {request.proteinId} not found or not secreted"
                 )
             
-            # 2. Extraire la séquence
             clean_seq = protein["sequence"]
             gene_name = protein["geneName"]
             protein_name = protein["proteinName"]
+            accession = protein["accession"]
             
-            protein_id_header = f"SP|{protein['accession']}|{gene_name}_HUMAN {protein_name}"
+            protein_id = f"SP|{accession}|{gene_name}_HUMAN {protein_name}"
             
-            print(f"\n🧬 Analyzing protein: {gene_name} ({protein['accession']})")
-            print(f"📊 Length: {protein['length']} aa")
-            print(f"📋 Parameters: signal={request.signalPeptideLength}, min_sites={request.minCleavageSites}, spacing={request.minCleavageSpacing}, max_len={request.maxPeptideLength}")
-            
-            # 3. Valider la séquence
+            # Validation
             SequenceValidator.validate_characters(clean_seq)
-            min_length = request.signalPeptideLength + 10
-            SequenceValidator.validate_length(clean_seq, min_length)
+            min_seq_length = request.signalPeptideLength + 10
+            SequenceValidator.validate_length(clean_seq, min_seq_length)
             
-            # 4. Détecter sites de clivage
+            # Détection sites de clivage
             cleavage_sites = CleavageDetector.find_sites(
                 sequence=clean_seq,
                 mode=request.mode,
@@ -207,7 +260,7 @@ async def analyze(request: AnalysisRequest):
                 min_spacing=request.minCleavageSpacing
             )
             
-            # 5. Extraire peptides
+            # Extraction peptides
             peptides = PeptideExtractor.extract(
                 sequence=clean_seq,
                 cleavage_sites=cleavage_sites,
@@ -217,54 +270,47 @@ async def analyze(request: AnalysisRequest):
                 mode=request.mode
             )
             
-            # 5.5. Filtrer par maxPeptideLength
-            peptides_filtered = [
-                p for p in peptides
-                if p['length'] <= request.maxPeptideLength
-            ]
+            # Filtrer par longueur max
+            peptides = [p for p in peptides if p['length'] <= request.maxPeptideLength]
             
-            print(f"📊 Peptides before max filter: {len(peptides)}")
-            print(f"📊 Peptides after max filter: {len(peptides_filtered)}")
+            if len(peptides) == 0:
+                return {
+                    "sequenceLength": len(clean_seq),
+                    "cleavageSitesCount": len(cleavage_sites),
+                    "peptides": [],
+                    "peptidesInRange": 0,
+                    "proteinId": protein_id,
+                    "geneName": gene_name,
+                    "proteinName": protein_name,
+                    "mode": request.mode
+                }
             
-            peptides = peptides_filtered
+            # Bioactivité
+            bioactivity_results = await BioactivityPredictor.predict_batch(
+                [p['sequence'] for p in peptides],
+                session
+            )
             
-            # 6. Session aiohttp pour bioactivité + UniProt
-            async with aiohttp.ClientSession() as session:
-                # Calculer bioactivité (parallèle)
-                bioactivity_results = await BioactivityPredictor.predict_batch(
-                    [p['sequence'] for p in peptides],
-                    session
-                )
-                
-                # Vérifier UniProt (parallèle)
-                uniprot_results = await UniProtChecker.check_batch(
-                    [p['sequence'] for p in peptides],
-                    session,
-                    protein_id=protein_id_header
-                )
+            # UniProt check
+            uniprot_results = await UniProtChecker.check_batch(
+                [p['sequence'] for p in peptides],
+                session,
+                protein_id=protein_id
+            )
             
-            # 7. Assigner scores bioactivité
-            for peptide, (score, source) in zip(peptides, bioactivity_results):
+            # Assigner
+            for peptide, (score, source), uniprot_data in zip(peptides, bioactivity_results, uniprot_results):
                 peptide['bioactivityScore'] = score
                 peptide['bioactivitySource'] = source
-            
-            # 8. Assigner données UniProt
-            for peptide, uniprot_data in zip(peptides, uniprot_results):
                 peptide['uniprotStatus'] = uniprot_data['uniprotStatus']
                 peptide['uniprotName'] = uniprot_data['uniprotName']
                 peptide['uniprotNote'] = uniprot_data['uniprotNote']
                 peptide['uniprotAccession'] = uniprot_data['uniprotAccession']
             
-            # 9. Détecter PTMs pour chaque peptide
-            print(f"\n🔬 Detecting PTMs for {len(peptides)} peptides...")
+            # PTMs
+            print(f"🔬 Detecting PTMs for {len(peptides)} peptides...")
             for idx, peptide in enumerate(peptides, 1):
                 try:
-                    if not isinstance(peptide['start'], int) or not isinstance(peptide['end'], int):
-                        print(f"  ⚠️ Peptide #{idx}: Invalid start/end types")
-                        peptide['ptms'] = []
-                        peptide['modifiedSequence'] = None
-                        continue
-                    
                     detected_ptms = ptm_detector.detect_all_ptms(
                         peptide_sequence=peptide['sequence'],
                         full_protein_sequence=clean_seq,
@@ -279,52 +325,60 @@ async def analyze(request: AnalysisRequest):
                             peptide['sequence'],
                             detected_ptms
                         )
-                        print(f"  ✅ Peptide #{idx}: {len(detected_ptms)} PTMs detected")
                     else:
                         peptide['modifiedSequence'] = None
                         
                 except Exception as e:
-                    print(f"  ❌ Peptide #{idx}: PTM detection error: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    print(f"❌ PTM detection error for peptide {idx}: {e}")
                     peptide['ptms'] = []
                     peptide['modifiedSequence'] = None
             
-            # 10. Trier par bioactivité
+            # Trier
             peptides.sort(key=lambda x: x['bioactivityScore'], reverse=True)
             
-            # 11. Top 5 peptides
-            top_peptides = peptides[:5]
-            
-            # 12. Stats
             peptides_in_range = sum(1 for p in peptides if p['inRange'])
             
-            # 13. Construire réponse
-            return AnalysisResponse(
-                sequenceLength=len(clean_seq),
-                cleavageSitesCount=len(cleavage_sites),
-                peptides=[PeptideResult(**p) for p in peptides],
-                peptidesInRange=peptides_in_range,
-                topPeptides=[PeptideResult(**p) for p in top_peptides],
-                cleavageSites=cleavage_sites,
-                mode=request.mode,
-                proteinId=protein['accession'],
-                geneName=gene_name,
-                proteinName=protein_name
-            )
+            return {
+                "sequenceLength": len(clean_seq),
+                "cleavageSitesCount": len(cleavage_sites),
+                "peptides": peptides,
+                "peptidesInRange": peptides_in_range,
+                "proteinId": protein_id,
+                "geneName": gene_name,
+                "proteinName": protein_name,
+                "cleavageSites": [
+                    {"position": site.position, "motif": site.motif, "index": site.index}
+                    for site in cleavage_sites
+                ],
+                "mode": request.mode,
+                "isFasta": False
+            }
     
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Analysis error: {e}")
-        import traceback
-        traceback.print_exc()
+    else:
         raise HTTPException(
-            status_code=500,
-            detail=f"Erreur interne: {str(e)}"
+            status_code=400,
+            detail="Either proteinId or fastaSequence must be provided"
         )
+
+
+@app.get("/api/proteins/search")
+async def search_proteins(q: str, type: str = "gene_name", limit: int = 10):
+    """Recherche de protéines dans UniProt"""
+    async with aiohttp.ClientSession() as session:
+        results = await protein_db.search_proteins(q, type, limit, session)
+        return results
+
+
+@app.get("/api/proteins/{accession}")
+async def get_protein(accession: str):
+    """Récupère les détails d'une protéine"""
+    async with aiohttp.ClientSession() as session:
+        protein = await protein_db.get_protein(accession, session)
+        if not protein:
+            raise HTTPException(status_code=404, detail="Protein not found")
+        return protein
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)

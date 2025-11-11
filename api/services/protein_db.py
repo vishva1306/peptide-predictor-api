@@ -43,9 +43,9 @@ class ProteinDatabase:
     async def search_proteins(
         self,
         query: str,
-        search_type: str,  # ⭐ NOUVEAU : "gene_name" ou "accession"
-        session: aiohttp.ClientSession,
-        limit: int = 10
+        search_type: str,
+        limit: int,
+        session: aiohttp.ClientSession
     ) -> List[Dict]:
         """
         Recherche de protéines sécrétées humaines par gene name ou ID
@@ -53,8 +53,8 @@ class ProteinDatabase:
         Args:
             query: Gene name (ex: "POMC") ou UniProt ID (ex: "P01189")
             search_type: "gene_name" ou "accession"
-            session: Session aiohttp
             limit: Nombre max de résultats
+            session: Session aiohttp
         
         Returns:
             Liste de protéines matchant la requête
@@ -71,13 +71,10 @@ class ProteinDatabase:
         
         # Construire la query UniProt
         if search_type == "accession":
-            # Recherche par ID UniProt
             uniprot_query = f"(accession:{query.upper()})"
         else:
-            # Recherche par gene name
             uniprot_query = f"(gene:{query.upper()})"
         
-        # ⭐ CORRECTION : Filtre secreted simplifié
         uniprot_query += " AND (organism_id:9606) AND (reviewed:true) AND (cc_subcellular_location:Secreted)"
         
         print(f"📝 UniProt query: {uniprot_query}")
@@ -112,9 +109,13 @@ class ProteinDatabase:
                 # Parser les résultats
                 proteins = []
                 for entry in results:
-                    protein = self._parse_protein_entry(entry)
-                    if protein:
-                        proteins.append(protein)
+                    # ✅ Vérifier que c'est bien un dict
+                    if isinstance(entry, dict):
+                        protein = self._parse_protein_entry(entry)
+                        if protein:
+                            proteins.append(protein)
+                    else:
+                        print(f"⚠️ Skipping non-dict entry: {type(entry)}")
                 
                 # Cache les résultats
                 self._set_cache(cache_key, proteins)
@@ -126,6 +127,8 @@ class ProteinDatabase:
             return []
         except Exception as e:
             print(f"❌ Error searching proteins: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     
     async def get_protein(
@@ -213,7 +216,7 @@ class ProteinDatabase:
                 return None
             
             # Signal peptide
-            signal_end = 20  # Valeur par défaut
+            signal_end = 20
             features = entry.get("features", [])
             for feat in features:
                 if feat.get("type") == "Signal":
@@ -247,7 +250,7 @@ class ProteinDatabase:
                 num_peptides=len(annotated_peptides)
             )
             
-            # ⭐ Header FASTA
+            # Header FASTA
             fasta_header = f">sp|{accession}|{gene_name or 'UNKN'}_HUMAN {protein_name}"
             
             protein = {
@@ -258,7 +261,7 @@ class ProteinDatabase:
                 "sequence": sequence,
                 "signalPeptideEnd": signal_end,
                 "recommendedParams": recommended_params,
-                "fastaHeader": fasta_header  # ⭐ NOUVEAU
+                "fastaHeader": fasta_header
             }
             
             if full_details:
@@ -268,6 +271,8 @@ class ProteinDatabase:
         
         except Exception as e:
             print(f"❌ Error parsing protein entry: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     @staticmethod
