@@ -30,7 +30,7 @@ class PeptideExtractor:
                 signal_length
             )
         
-        # ==================== STRICT / PERMISSIVE (INCHANGÉ) ====================
+        # ==================== STRICT / PERMISSIVE ====================
         if len(cleavage_sites) < min_sites:
             return []
         
@@ -48,7 +48,7 @@ class PeptideExtractor:
                     if len(pep_seq) > 3:
                         peptides.append({
                             'sequence': pep_seq,
-                            'start': prev_position,
+                            'start': prev_position + 1,  # ⭐ CORRIGÉ : Convertir en 1-indexed
                             'end': current_pos,
                             'length': len(pep_seq),
                             'inRange': config.OPTIMAL_PEPTIDE_MIN_LENGTH <= len(pep_seq) <= config.OPTIMAL_PEPTIDE_MAX_LENGTH,
@@ -64,7 +64,7 @@ class PeptideExtractor:
                 if len(pep_seq) > 0:
                     peptides.append({
                         'sequence': pep_seq,
-                        'start': prev_position,
+                        'start': prev_position + 1,  # ⭐ CORRIGÉ : Convertir en 1-indexed
                         'end': current_pos,
                         'length': len(pep_seq),
                         'inRange': config.OPTIMAL_PEPTIDE_MIN_LENGTH <= len(pep_seq) <= config.OPTIMAL_PEPTIDE_MAX_LENGTH,
@@ -83,7 +83,7 @@ class PeptideExtractor:
             if len(last_seq) > min_length:
                 peptides.append({
                     'sequence': last_seq,
-                    'start': prev_position,
+                    'start': prev_position + 1,  # ⭐ CORRIGÉ : Convertir en 1-indexed
                     'end': len(sequence),
                     'length': len(last_seq),
                     'inRange': config.OPTIMAL_PEPTIDE_MIN_LENGTH <= len(last_seq) <= config.OPTIMAL_PEPTIDE_MAX_LENGTH,
@@ -166,7 +166,7 @@ class PeptideExtractor:
                 
                 peptides.append({
                     'sequence': peptide_seq,
-                    'start': start_pos,
+                    'start': start_pos + 1,  # ⭐ CORRIGÉ : Convertir en 1-indexed
                     'end': end_pos,
                     'length': peptide_length,
                     'inRange': config.OPTIMAL_PEPTIDE_MIN_LENGTH <= peptide_length <= config.OPTIMAL_PEPTIDE_MAX_LENGTH,
