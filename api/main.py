@@ -46,8 +46,8 @@ class AnalysisRequest(BaseModel):
     @field_validator('mode')
     @classmethod
     def validate_mode(cls, v):
-        if v not in ['strict', 'permissive']:
-            raise ValueError('Mode must be "strict" or "permissive"')
+        if v not in ['strict', 'permissive', 'ultra-permissive']:
+            raise ValueError('Mode must be "strict" ,"permissive", or "ultra-permissive"')
         return v
     
     @field_validator('fastaSequence')
@@ -65,7 +65,7 @@ class AnalysisRequest(BaseModel):
 async def root():
     return {
         "message": "Peptide Predictor API",
-        "version": "2.0.0",
+        "version": "2.3.0",
         "endpoints": {
             "/analyze": "POST - Analyze protein(s) or FASTA sequence",
             "/api/proteins/search": "GET - Search proteins",
@@ -143,11 +143,14 @@ async def analyze_protein(request: AnalysisRequest):
                     "fastaHeader": fasta_data['header']
                 }
             
-            # Prédiction bioactivité (parallèle)
+            # ⭐ MODIFIÉ : Prédiction bioactivité AVEC CONTEXTE (parallèle)
             async with aiohttp.ClientSession() as session:
                 bioactivity_results = await BioactivityPredictor.predict_batch(
-                    [p['sequence'] for p in peptides],
-                    session
+                    peptides=[p['sequence'] for p in peptides],
+                    session=session,
+                    cleavage_motifs=[p['cleavageMotif'] for p in peptides],
+                    full_protein_sequence=sequence,
+                    peptide_end_positions=[p['end'] for p in peptides]
                 )
             
             # Assigner scores
@@ -285,10 +288,13 @@ async def analyze_protein(request: AnalysisRequest):
                     "mode": request.mode
                 }
             
-            # Bioactivité
+            # ⭐ MODIFIÉ : Bioactivité AVEC CONTEXTE
             bioactivity_results = await BioactivityPredictor.predict_batch(
-                [p['sequence'] for p in peptides],
-                session
+                peptides=[p['sequence'] for p in peptides],
+                session=session,
+                cleavage_motifs=[p['cleavageMotif'] for p in peptides],
+                full_protein_sequence=clean_seq,
+                peptide_end_positions=[p['end'] for p in peptides]
             )
             
             # UniProt check

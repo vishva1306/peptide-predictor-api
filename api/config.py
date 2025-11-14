@@ -6,7 +6,7 @@ class Config:
     
     # API Info
     API_TITLE = "Peptide Predictor API"
-    API_VERSION = "2.2.0"
+    API_VERSION = "2.3.0"  # ⭐ Version bump
     API_DESCRIPTION = "API pour prédire les peptides bioactifs (Coassolo et al. Nature 2025)"
     
     # CORS
@@ -34,7 +34,10 @@ class Config:
         "strict": r"(?<!K|R)(?:KK|KR|RR|RK)(?=[^RKILPVH]|$)",
         
         # MODE PERMISSIVE : Simplifié au maximum - juste les motifs de clivage
-        "permissive": r"(?:KK|KR|RR|RK)"
+        "permissive": r"(?:KK|KR|RR|RK)",
+        
+        # ⭐ NOUVEAU : MODE ULTRA-PERMISSIVE (single basic sites)
+        "ultra-permissive": r"(?:K|R)"
     }
     
     @classmethod

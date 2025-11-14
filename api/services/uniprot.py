@@ -75,8 +75,12 @@ class UniProtChecker:
                                 "description": feat.get("description", "Peptide connu"),
                                 "start": start,
                                 "end": end,
-                                "sequence": peptide_seq
+                                "sequence": peptide_seq,
+                                "length": end - start + 1  # ⭐ Ajout longueur pour le tri
                             })
+                
+                # ⭐ FIX β-MSH : Trier par longueur (plus court = plus spécifique)
+                peptide_features.sort(key=lambda p: p['length'])
                 
                 print(f"✅ {len(peptide_features)} peptides annotés trouvés")
                 return peptide_features
@@ -95,6 +99,7 @@ class UniProtChecker:
     ) -> Optional[Dict]:
         """
         Cherche un match avec 3 niveaux de précision
+        ⭐ AVEC FIX β-MSH : Priorité aux peptides plus courts (plus spécifiques)
         
         Returns:
             {
@@ -103,6 +108,9 @@ class UniProtChecker:
                 "note": "Information additionnelle sur le type de fragment"
             }
         """
+        
+        # ⭐ Les peptides sont déjà triés par longueur (plus court d'abord)
+        # Donc on prend le PREMIER match trouvé (le plus spécifique)
         
         for annotated in annotated_peptides:
             annotated_seq = annotated["sequence"]
@@ -115,8 +123,12 @@ class UniProtChecker:
                     "description": annotated['description'],
                     "note": None
                 }
+        
+        # 2. PARTIAL MATCHES (seulement si pas d'exact match)
+        for annotated in annotated_peptides:
+            annotated_seq = annotated["sequence"]
             
-            # 2. PARTIAL MATCH - Fragment (peptide détecté DANS peptide annoté) ⚠️
+            # 2a. Fragment (peptide détecté DANS peptide annoté) ⚠️
             if peptide_seq in annotated_seq:
                 # Déterminer quelle partie du peptide annoté
                 start_pos = annotated_seq.index(peptide_seq)
@@ -137,7 +149,7 @@ class UniProtChecker:
                     "note": fragment_type
                 }
             
-            # 3. PARTIAL MATCH - Extension (peptide annoté DANS peptide détecté) ⚠️
+            # 2b. Extension (peptide annoté DANS peptide détecté) ⚠️
             if annotated_seq in peptide_seq:
                 print(f"⚠️ PARTIAL MATCH (extension) : Extended form of {annotated['description']}")
                 

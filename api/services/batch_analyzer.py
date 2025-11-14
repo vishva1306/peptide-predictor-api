@@ -129,10 +129,13 @@ class BatchAnalyzer:
                     "mode": mode
                 }
             
-            # 8. Calculer bioactivité (parallèle)
+            # ⭐ MODIFIÉ : 8. Calculer bioactivité AVEC CONTEXTE (parallèle)
             bioactivity_results = await BioactivityPredictor.predict_batch(
-                [p['sequence'] for p in peptides],
-                session
+                peptides=[p['sequence'] for p in peptides],
+                session=session,
+                cleavage_motifs=[p['cleavageMotif'] for p in peptides],
+                full_protein_sequence=clean_seq,
+                peptide_end_positions=[p['end'] for p in peptides]
             )
             
             # 9. Vérifier UniProt (parallèle)

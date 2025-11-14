@@ -9,7 +9,7 @@ class AnalysisRequest(BaseModel):
         None, 
         description="UniProt accession (single: 'P01189' or batch: ['P01189', 'P01308'])"
     )
-    mode: Literal["strict", "permissive"] = Field(default="strict")
+    mode: Literal["strict", "permissive", "ultra-permissive"] = Field(default="strict")
     signalPeptideLength: int = Field(default=config.DEFAULT_SIGNAL_PEPTIDE_LENGTH, ge=10, le=50)
     minCleavageSites: int = Field(default=config.DEFAULT_MIN_CLEAVAGE_SITES, ge=2, le=10)
     minCleavageSpacing: int = Field(default=config.DEFAULT_MIN_CLEAVAGE_SPACING, ge=1, le=20)
