@@ -15,7 +15,8 @@ from api.services import (
     protein_db,
     ptm_detector,
     batch_analyzer,
-    fasta_parser
+    fasta_parser,
+    amphipathic_calculator  # ⭐ NOUVEAU
 )
 
 app = FastAPI(title="Peptide Predictor API")
@@ -65,7 +66,7 @@ class AnalysisRequest(BaseModel):
 async def root():
     return {
         "message": "Peptide Predictor API",
-        "version": "2.3.0",
+        "version": "2.4.0",  # ⭐ Version bump
         "endpoints": {
             "/analyze": "POST - Analyze protein(s) or FASTA sequence",
             "/api/proteins/search": "GET - Search proteins",
@@ -143,7 +144,7 @@ async def analyze_protein(request: AnalysisRequest):
                     "fastaHeader": fasta_data['header']
                 }
             
-            # ⭐ MODIFIÉ : Prédiction bioactivité AVEC CONTEXTE (parallèle)
+            # Prédiction bioactivité (parallèle)
             async with aiohttp.ClientSession() as session:
                 bioactivity_results = await BioactivityPredictor.predict_batch(
                     peptides=[p['sequence'] for p in peptides],
@@ -153,15 +154,21 @@ async def analyze_protein(request: AnalysisRequest):
                     peptide_end_positions=[p['end'] for p in peptides]
                 )
             
-            # Assigner scores
+            # Assigner scores bioactivité
             for peptide, (score, source) in zip(peptides, bioactivity_results):
                 peptide['bioactivityScore'] = score
                 peptide['bioactivitySource'] = source
-                # Pas de vérification UniProt pour FASTA
                 peptide['uniprotStatus'] = 'n/a'
                 peptide['uniprotName'] = None
                 peptide['uniprotNote'] = None
                 peptide['uniprotAccession'] = None
+            
+            # ⭐ NOUVEAU : Calculer amphipathicité
+            print(f"🧬 Calculating amphipathic scores for {len(peptides)} peptides...")
+            for peptide in peptides:
+                amphipathic_data = amphipathic_calculator.calculate(peptide['sequence'])
+                peptide['amphipathicScore'] = amphipathic_data['amphipathicScore']
+                peptide['amphipathicData'] = amphipathic_data
             
             # Détection PTMs
             print(f"🔬 Detecting PTMs for {len(peptides)} peptides...")
@@ -288,7 +295,7 @@ async def analyze_protein(request: AnalysisRequest):
                     "mode": request.mode
                 }
             
-            # ⭐ MODIFIÉ : Bioactivité AVEC CONTEXTE
+            # Bioactivité
             bioactivity_results = await BioactivityPredictor.predict_batch(
                 peptides=[p['sequence'] for p in peptides],
                 session=session,
@@ -304,7 +311,7 @@ async def analyze_protein(request: AnalysisRequest):
                 protein_id=protein_id
             )
             
-            # Assigner
+            # Assigner bioactivité et UniProt
             for peptide, (score, source), uniprot_data in zip(peptides, bioactivity_results, uniprot_results):
                 peptide['bioactivityScore'] = score
                 peptide['bioactivitySource'] = source
@@ -312,6 +319,13 @@ async def analyze_protein(request: AnalysisRequest):
                 peptide['uniprotName'] = uniprot_data['uniprotName']
                 peptide['uniprotNote'] = uniprot_data['uniprotNote']
                 peptide['uniprotAccession'] = uniprot_data['uniprotAccession']
+            
+            # ⭐ NOUVEAU : Calculer amphipathicité
+            print(f"🧬 Calculating amphipathic scores for {len(peptides)} peptides...")
+            for peptide in peptides:
+                amphipathic_data = amphipathic_calculator.calculate(peptide['sequence'])
+                peptide['amphipathicScore'] = amphipathic_data['amphipathicScore']
+                peptide['amphipathicData'] = amphipathic_data
             
             # PTMs
             print(f"🔬 Detecting PTMs for {len(peptides)} peptides...")

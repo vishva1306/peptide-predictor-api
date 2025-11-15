@@ -2,15 +2,14 @@
 import asyncio
 import aiohttp
 from typing import List, Dict, Optional
-from api.services import (
-    SequenceValidator,
-    CleavageDetector,
-    PeptideExtractor,
-    BioactivityPredictor,
-    UniProtChecker,
-    protein_db,
-    ptm_detector
-)
+from api.services.validators import SequenceValidator
+from api.services.cleavage import CleavageDetector
+from api.services.peptides import PeptideExtractor
+from api.services.bioactivity import BioactivityPredictor
+from api.services.uniprot import UniProtChecker
+from api.services.protein_db import protein_db
+from api.services.ptm_detector import ptm_detector
+from api.services.amphipathic import amphipathic_calculator  # ⭐ NOUVEAU
 
 
 class BatchAnalyzer:
@@ -129,7 +128,7 @@ class BatchAnalyzer:
                     "mode": mode
                 }
             
-            # ⭐ MODIFIÉ : 8. Calculer bioactivité AVEC CONTEXTE (parallèle)
+            # 8. Calculer bioactivité AVEC CONTEXTE (parallèle)
             bioactivity_results = await BioactivityPredictor.predict_batch(
                 peptides=[p['sequence'] for p in peptides],
                 session=session,
@@ -156,6 +155,13 @@ class BatchAnalyzer:
                 peptide['uniprotName'] = uniprot_data['uniprotName']
                 peptide['uniprotNote'] = uniprot_data['uniprotNote']
                 peptide['uniprotAccession'] = uniprot_data['uniprotAccession']
+            
+            # ⭐ 11.5. Calculer amphipathicité
+            print(f"🧬 Calculating amphipathic scores for {len(peptides)} peptides...")
+            for peptide in peptides:
+                amphipathic_data = amphipathic_calculator.calculate(peptide['sequence'])
+                peptide['amphipathicScore'] = amphipathic_data['amphipathicScore']
+                peptide['amphipathicData'] = amphipathic_data
             
             # 12. Détecter PTMs
             print(f"🔬 Detecting PTMs for {len(peptides)} peptides...")
