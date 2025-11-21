@@ -9,7 +9,8 @@ from api.services.bioactivity import BioactivityPredictor
 from api.services.uniprot import UniProtChecker
 from api.services.protein_db import protein_db
 from api.services.ptm_detector import ptm_detector
-from api.services.amphipathic import amphipathic_calculator  # ⭐ NOUVEAU
+from api.services.amphipathic import amphipathic_calculator
+from api.services.brain_peptides import brain_checker  # ⭐ NOUVEAU
 
 
 class BatchAnalyzer:
@@ -120,6 +121,7 @@ class BatchAnalyzer:
                     "cleavageSitesCount": len(cleavage_sites),
                     "peptides": [],
                     "peptidesInRange": 0,
+                    "brainPeptidesDetected": 0,
                     "topPeptides": [],
                     "cleavageSites": [
                         {"position": site.position, "motif": site.motif, "index": site.index}
@@ -156,12 +158,21 @@ class BatchAnalyzer:
                 peptide['uniprotNote'] = uniprot_data['uniprotNote']
                 peptide['uniprotAccession'] = uniprot_data['uniprotAccession']
             
-            # ⭐ 11.5. Calculer amphipathicité
+            # 11.5. Calculer amphipathicité
             print(f"🧬 Calculating amphipathic scores for {len(peptides)} peptides...")
             for peptide in peptides:
                 amphipathic_data = amphipathic_calculator.calculate(peptide['sequence'])
                 peptide['amphipathicScore'] = amphipathic_data['amphipathicScore']
                 peptide['amphipathicData'] = amphipathic_data
+            
+            # ⭐ 11.6. NOUVEAU : Vérifier brain peptides
+            print(f"🧠 Checking brain peptides for {len(peptides)} peptides...")
+            for peptide in peptides:
+                brain_data = brain_checker.check(peptide['sequence'])
+                if brain_data:
+                    peptide['brainPeptide'] = brain_data
+                else:
+                    peptide['brainPeptide'] = None
             
             # 12. Détecter PTMs
             print(f"🔬 Detecting PTMs for {len(peptides)} peptides...")
@@ -202,12 +213,13 @@ class BatchAnalyzer:
             
             # 15. Stats
             peptides_in_range = sum(1 for p in peptides if p['inRange'])
+            brain_detected = sum(1 for p in peptides if p.get('brainPeptide'))
             
             # 16. Callback progression
             if progress_callback:
                 await progress_callback(protein_id, "completed")
             
-            print(f"✅ Analysis completed for {gene_name}: {len(peptides)} peptides")
+            print(f"✅ Analysis completed for {gene_name}: {len(peptides)} peptides, {brain_detected} in brain")
             
             # 17. Retourner résultat
             return {
@@ -224,6 +236,7 @@ class BatchAnalyzer:
                 "cleavageSitesCount": len(cleavage_sites),
                 "peptides": peptides,
                 "peptidesInRange": peptides_in_range,
+                "brainPeptidesDetected": brain_detected,
                 "topPeptides": top_peptides,
                 "cleavageSites": [
                     {"position": site.position, "motif": site.motif, "index": site.index}

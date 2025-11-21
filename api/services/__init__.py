@@ -8,7 +8,8 @@ from .protein_db import protein_db
 from .ptm_detector import ptm_detector
 from .batch_analyzer import batch_analyzer
 from .fasta_parser import fasta_parser
-from .amphipathic import amphipathic_calculator  # ⭐ NOUVEAU
+from .amphipathic import amphipathic_calculator
+from .brain_peptides import brain_checker  # ⭐ NOUVEAU
 
 __all__ = [
     "SequenceValidator",
@@ -20,5 +21,6 @@ __all__ = [
     "ptm_detector",
     "batch_analyzer",
     "fasta_parser",
-    "amphipathic_calculator"  # ⭐ NOUVEAU
+    "amphipathic_calculator",
+    "brain_checker"  # ⭐ NOUVEAU
 ]
