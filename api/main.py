@@ -16,7 +16,8 @@ from api.services import (
     ptm_detector,
     batch_analyzer,
     fasta_parser,
-    amphipathic_calculator  # ⭐ NOUVEAU
+    amphipathic_calculator,
+    brain_checker  # ⭐ NOUVEAU
 )
 
 app = FastAPI(title="Peptide Predictor API")
@@ -64,9 +65,21 @@ class AnalysisRequest(BaseModel):
 
 @app.get("/")
 async def root():
+    # Récupérer les stats brain peptides
+    brain_stats = brain_checker.get_stats()
+    
     return {
         "message": "Peptide Predictor API",
-        "version": "2.4.0",  # ⭐ Version bump
+        "version": "2.5.0",  # ⭐ Version bump
+        "features": {
+            "amphipathic_score": True,
+            "brain_peptides": brain_stats['loaded']
+        },
+        "brain_dataset": {
+            "loaded": brain_stats['loaded'],
+            "total_peptides": brain_stats.get('total_peptides', 0),
+            "reference": brain_stats.get('reference', 'N/A')
+        },
         "endpoints": {
             "/analyze": "POST - Analyze protein(s) or FASTA sequence",
             "/api/proteins/search": "GET - Search proteins",
@@ -163,12 +176,21 @@ async def analyze_protein(request: AnalysisRequest):
                 peptide['uniprotNote'] = None
                 peptide['uniprotAccession'] = None
             
-            # ⭐ NOUVEAU : Calculer amphipathicité
+            # Calculer amphipathicité
             print(f"🧬 Calculating amphipathic scores for {len(peptides)} peptides...")
             for peptide in peptides:
                 amphipathic_data = amphipathic_calculator.calculate(peptide['sequence'])
                 peptide['amphipathicScore'] = amphipathic_data['amphipathicScore']
                 peptide['amphipathicData'] = amphipathic_data
+            
+            # ⭐ NOUVEAU : Vérifier brain peptides
+            print(f"🧠 Checking brain peptides for {len(peptides)} peptides...")
+            for peptide in peptides:
+                brain_data = brain_checker.check(peptide['sequence'])
+                if brain_data:
+                    peptide['brainPeptide'] = brain_data
+                else:
+                    peptide['brainPeptide'] = None
             
             # Détection PTMs
             print(f"🔬 Detecting PTMs for {len(peptides)} peptides...")
@@ -201,12 +223,14 @@ async def analyze_protein(request: AnalysisRequest):
             
             # Stats
             peptides_in_range = sum(1 for p in peptides if p['inRange'])
+            brain_detected = sum(1 for p in peptides if p.get('brainPeptide'))
             
             return {
                 "sequenceLength": len(sequence),
                 "cleavageSitesCount": len(cleavage_sites),
                 "peptides": peptides,
                 "peptidesInRange": peptides_in_range,
+                "brainPeptidesDetected": brain_detected,
                 "proteinId": fasta_data['id'] or "Custom",
                 "geneName": fasta_data['name'] or "FASTA",
                 "proteinName": fasta_data['name'] or "Custom FASTA Sequence",
@@ -320,12 +344,21 @@ async def analyze_protein(request: AnalysisRequest):
                 peptide['uniprotNote'] = uniprot_data['uniprotNote']
                 peptide['uniprotAccession'] = uniprot_data['uniprotAccession']
             
-            # ⭐ NOUVEAU : Calculer amphipathicité
+            # Calculer amphipathicité
             print(f"🧬 Calculating amphipathic scores for {len(peptides)} peptides...")
             for peptide in peptides:
                 amphipathic_data = amphipathic_calculator.calculate(peptide['sequence'])
                 peptide['amphipathicScore'] = amphipathic_data['amphipathicScore']
                 peptide['amphipathicData'] = amphipathic_data
+            
+            # ⭐ NOUVEAU : Vérifier brain peptides
+            print(f"🧠 Checking brain peptides for {len(peptides)} peptides...")
+            for peptide in peptides:
+                brain_data = brain_checker.check(peptide['sequence'])
+                if brain_data:
+                    peptide['brainPeptide'] = brain_data
+                else:
+                    peptide['brainPeptide'] = None
             
             # PTMs
             print(f"🔬 Detecting PTMs for {len(peptides)} peptides...")
@@ -357,12 +390,14 @@ async def analyze_protein(request: AnalysisRequest):
             peptides.sort(key=lambda x: x['bioactivityScore'], reverse=True)
             
             peptides_in_range = sum(1 for p in peptides if p['inRange'])
+            brain_detected = sum(1 for p in peptides if p.get('brainPeptide'))
             
             return {
                 "sequenceLength": len(clean_seq),
                 "cleavageSitesCount": len(cleavage_sites),
                 "peptides": peptides,
                 "peptidesInRange": peptides_in_range,
+                "brainPeptidesDetected": brain_detected,
                 "proteinId": protein_id,
                 "geneName": gene_name,
                 "proteinName": protein_name,
