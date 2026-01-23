@@ -17,7 +17,7 @@ from api.services import (
     batch_analyzer,
     fasta_parser,
     amphipathic_calculator,
-    brain_checker  # ⭐ NOUVEAU
+    brain_checker
 )
 
 app = FastAPI(title="Peptide Predictor API")
@@ -41,15 +41,15 @@ class AnalysisRequest(BaseModel):
     fastaHeader: Optional[str] = None
     mode: str = Field(default="permissive")
     signalPeptideLength: int = Field(default=20, ge=0, le=100)
-    minCleavageSites: int = Field(default=4, ge=1, le=10)
+    minCleavageSites: int = Field(default=4, ge=1, le=10)  # ⭐ ge=1 pour PCSK5/6/7
     minCleavageSpacing: int = Field(default=5, ge=1, le=20)
     maxPeptideLength: int = Field(default=100, ge=10, le=500)
 
     @field_validator('mode')
     @classmethod
     def validate_mode(cls, v):
-        if v not in ['strict', 'permissive', 'ultra-permissive']:
-            raise ValueError('Mode must be "strict" ,"permissive", or "ultra-permissive"')
+        if v not in ['strict', 'permissive', 'ultra-permissive', 'pcsk567']:  # ⭐ Ajouté pcsk567
+            raise ValueError('Mode must be "strict", "permissive", "ultra-permissive", or "pcsk567"')
         return v
     
     @field_validator('fastaSequence')
@@ -70,10 +70,17 @@ async def root():
     
     return {
         "message": "Peptide Predictor API",
-        "version": "2.5.0",  # ⭐ Version bump
+        "version": "2.6.0",  # ⭐ Version bump
         "features": {
             "amphipathic_score": True,
-            "brain_peptides": brain_stats['loaded']
+            "brain_peptides": brain_stats['loaded'],
+            "pcsk567_cleavage": True  # ⭐ NOUVEAU
+        },
+        "modes": {
+            "strict": "PCSK1/2 with constraints (Nature paper)",
+            "permissive": "PCSK1/2 without constraints",
+            "ultra-permissive": "Single basic + RFamide",
+            "pcsk567": "PCSK5/6/7 (R-X-K/R-R motif)"  # ⭐ NOUVEAU
         },
         "brain_dataset": {
             "loaded": brain_stats['loaded'],
@@ -97,7 +104,22 @@ async def analyze_protein(request: AnalysisRequest):
     1. Single UniProt: proteinId = "P01189"
     2. Batch UniProt: proteinId = ["P01189", "P01308", "Q9UBU3"]
     3. FASTA: fastaSequence = "MALWMR..." (avec fastaHeader optionnel)
+    
+    Cleavage modes:
+    - strict: PCSK1/2 with constraints
+    - permissive: PCSK1/2 without constraints
+    - ultra-permissive: Single basic + RFamide
+    - pcsk567: PCSK5/6/7 (R-X-K/R-R motif) ⭐ NOUVEAU
     """
+    
+    # ⭐ NOUVEAU : Ajuster les paramètres pour PCSK5/6/7
+    min_sites = request.minCleavageSites
+    max_length = request.maxPeptideLength
+    
+    if request.mode == "pcsk567":
+        min_sites = 1  # Un seul site suffit pour PCSK5/6/7
+        max_length = 500  # Peptides plus grands
+        print(f"🔬 PCSK5/6/7 mode: min_sites={min_sites}, max_length={max_length}")
     
     # ==================== MODE FASTA ====================
     if request.fastaSequence:
@@ -134,12 +156,12 @@ async def analyze_protein(request: AnalysisRequest):
                 cleavage_sites=cleavage_sites,
                 signal_length=request.signalPeptideLength,
                 min_spacing=request.minCleavageSpacing,
-                min_sites=request.minCleavageSites,
+                min_sites=min_sites,  # ⭐ Utiliser min_sites ajusté
                 mode=request.mode
             )
             
             # Filtrer par longueur max
-            peptides = [p for p in peptides if p['length'] <= request.maxPeptideLength]
+            peptides = [p for p in peptides if p['length'] <= max_length]  # ⭐ Utiliser max_length ajusté
             
             print(f"🧬 Extracted {len(peptides)} peptides")
             
@@ -183,7 +205,7 @@ async def analyze_protein(request: AnalysisRequest):
                 peptide['amphipathicScore'] = amphipathic_data['amphipathicScore']
                 peptide['amphipathicData'] = amphipathic_data
             
-            # ⭐ NOUVEAU : Vérifier brain peptides
+            # Vérifier brain peptides
             print(f"🧠 Checking brain peptides for {len(peptides)} peptides...")
             for peptide in peptides:
                 brain_data = brain_checker.check(peptide['sequence'])
@@ -300,12 +322,12 @@ async def analyze_protein(request: AnalysisRequest):
                 cleavage_sites=cleavage_sites,
                 signal_length=request.signalPeptideLength,
                 min_spacing=request.minCleavageSpacing,
-                min_sites=request.minCleavageSites,
+                min_sites=min_sites,  # ⭐ Utiliser min_sites ajusté
                 mode=request.mode
             )
             
             # Filtrer par longueur max
-            peptides = [p for p in peptides if p['length'] <= request.maxPeptideLength]
+            peptides = [p for p in peptides if p['length'] <= max_length]  # ⭐ Utiliser max_length ajusté
             
             if len(peptides) == 0:
                 return {
@@ -351,7 +373,7 @@ async def analyze_protein(request: AnalysisRequest):
                 peptide['amphipathicScore'] = amphipathic_data['amphipathicScore']
                 peptide['amphipathicData'] = amphipathic_data
             
-            # ⭐ NOUVEAU : Vérifier brain peptides
+            # Vérifier brain peptides
             print(f"🧠 Checking brain peptides for {len(peptides)} peptides...")
             for peptide in peptides:
                 brain_data = brain_checker.check(peptide['sequence'])

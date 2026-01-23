@@ -18,13 +18,23 @@ class PeptideExtractor:
         """
         Extrait les peptides entre les sites de clivage
         
+        ⭐ NOUVEAU : Capture les motifs N-terminal et C-terminal pour chaque peptide
+        
         STRICT: Respecte l'espacement minimum entre peptides
         PERMISSIVE: Extrait TOUS les peptides même très courts
         ULTRA-PERMISSIVE: Extrait TOUS + calcul confidence score + INCLUT RF TERMINAL
+        PCSK567: Extrait forme mature après clivage R-X-K/R-R
         """
         
         if mode == "ultra-permissive":
             return PeptideExtractor._extract_ultra_permissive(
+                sequence,
+                cleavage_sites,
+                signal_length
+            )
+        
+        if mode == "pcsk567":
+            return PeptideExtractor._extract_pcsk567(
                 sequence,
                 cleavage_sites,
                 signal_length
@@ -36,6 +46,7 @@ class PeptideExtractor:
         
         peptides = []
         prev_position = signal_length
+        prev_motif = "SIGNAL"  # ⭐ NOUVEAU : Motif N-terminal du premier peptide
         
         for site in cleavage_sites:
             current_pos = site.index
@@ -48,32 +59,38 @@ class PeptideExtractor:
                     if len(pep_seq) > 3:
                         peptides.append({
                             'sequence': pep_seq,
-                            'start': prev_position + 1,  # ⭐ CORRIGÉ : Convertir en 1-indexed
+                            'start': prev_position + 1,  # 1-indexed
                             'end': current_pos,
                             'length': len(pep_seq),
                             'inRange': config.OPTIMAL_PEPTIDE_MIN_LENGTH <= len(pep_seq) <= config.OPTIMAL_PEPTIDE_MAX_LENGTH,
-                            'cleavageMotif': site.motif,
+                            'cleavageMotifN': prev_motif,  # ⭐ NOUVEAU
+                            'cleavageMotifC': site.motif,  # ⭐ NOUVEAU
+                            'cleavageMotif': site.motif,   # Compatibilité
                             'bioactivityScore': 0.0,
                             'bioactivitySource': 'none'
                         })
                     
                     prev_position = site.position
+                    prev_motif = site.motif  # ⭐ NOUVEAU : Mémoriser le motif pour le prochain peptide
             else:
                 pep_seq = sequence[prev_position:current_pos]
                 
                 if len(pep_seq) > 0:
                     peptides.append({
                         'sequence': pep_seq,
-                        'start': prev_position + 1,  # ⭐ CORRIGÉ : Convertir en 1-indexed
+                        'start': prev_position + 1,  # 1-indexed
                         'end': current_pos,
                         'length': len(pep_seq),
                         'inRange': config.OPTIMAL_PEPTIDE_MIN_LENGTH <= len(pep_seq) <= config.OPTIMAL_PEPTIDE_MAX_LENGTH,
-                        'cleavageMotif': site.motif,
+                        'cleavageMotifN': prev_motif,  # ⭐ NOUVEAU
+                        'cleavageMotifC': site.motif,  # ⭐ NOUVEAU
+                        'cleavageMotif': site.motif,   # Compatibilité
                         'bioactivityScore': 0.0,
                         'bioactivitySource': 'none'
                     })
                 
                 prev_position = site.position
+                prev_motif = site.motif  # ⭐ NOUVEAU
         
         # Dernier peptide
         if len(sequence) - prev_position > 0:
@@ -83,14 +100,97 @@ class PeptideExtractor:
             if len(last_seq) > min_length:
                 peptides.append({
                     'sequence': last_seq,
-                    'start': prev_position + 1,  # ⭐ CORRIGÉ : Convertir en 1-indexed
+                    'start': prev_position + 1,  # 1-indexed
                     'end': len(sequence),
                     'length': len(last_seq),
                     'inRange': config.OPTIMAL_PEPTIDE_MIN_LENGTH <= len(last_seq) <= config.OPTIMAL_PEPTIDE_MAX_LENGTH,
-                    'cleavageMotif': 'END',
+                    'cleavageMotifN': prev_motif,  # ⭐ NOUVEAU
+                    'cleavageMotifC': 'END',       # ⭐ NOUVEAU
+                    'cleavageMotif': 'END',        # Compatibilité
                     'bioactivityScore': 0.0,
                     'bioactivitySource': 'none'
                 })
+        
+        return peptides
+    
+    # ⭐ NOUVEAU : Extraction pour PCSK5/6/7 avec motifs N et C
+    @staticmethod
+    def _extract_pcsk567(
+        sequence: str,
+        cleavage_sites: List[CleavageSite],
+        signal_length: int
+    ) -> List[Dict]:
+        """
+        Extraction spécifique PCSK5/6/7
+        
+        Différences avec PCSK1/2 :
+        - Un seul site de clivage suffit
+        - On extrait la partie APRÈS le clivage (forme mature)
+        - Peptides généralement plus grands (50-200+ aa)
+        - Souvent en C-terminal
+        
+        ⭐ NOUVEAU : Capture motifs N et C terminal
+        """
+        peptides = []
+        
+        print(f"\n🧬 PCSK5/6/7 extraction from {len(cleavage_sites)} site(s)...")
+        
+        if len(cleavage_sites) == 0:
+            print("   ❌ No cleavage sites found")
+            return []
+        
+        for i, site in enumerate(cleavage_sites):
+            cleavage_pos = site.position  # Position après le motif R-X-K/R-R
+            
+            # ==================== FORME MATURE (après clivage) ====================
+            mature_seq = sequence[cleavage_pos:]
+            
+            if len(mature_seq) >= 10:
+                peptides.append({
+                    'sequence': mature_seq,
+                    'start': cleavage_pos + 1,  # 1-indexed
+                    'end': len(sequence),
+                    'length': len(mature_seq),
+                    'inRange': config.PCSK567_MIN_LENGTH <= len(mature_seq) <= config.PCSK567_MAX_LENGTH,
+                    'cleavageMotifN': site.motif,  # ⭐ NOUVEAU : Le motif PCSK5/6/7 est en N-term de la forme mature
+                    'cleavageMotifC': 'END',       # ⭐ NOUVEAU : C'est la fin de la protéine
+                    'cleavageMotif': site.motif,   # Compatibilité
+                    'bioactivityScore': 0.0,
+                    'bioactivitySource': 'none',
+                    'peptideType': 'mature_form',
+                    'cleavedBy': 'PCSK5/6/7'
+                })
+                
+                print(f"   ✅ Mature form: {len(mature_seq)} aa")
+                print(f"      N-term motif: {site.motif}")
+                print(f"      C-term motif: END")
+                print(f"      Sequence: {mature_seq[:50]}...")
+            
+            # ==================== PRODOMAIN (avant clivage) ====================
+            prodomain_start = signal_length
+            prodomain_seq = sequence[prodomain_start:site.index]
+            
+            if len(prodomain_seq) >= 20:
+                peptides.append({
+                    'sequence': prodomain_seq,
+                    'start': prodomain_start + 1,  # 1-indexed
+                    'end': site.index,
+                    'length': len(prodomain_seq),
+                    'inRange': config.PCSK567_MIN_LENGTH <= len(prodomain_seq) <= config.PCSK567_MAX_LENGTH,
+                    'cleavageMotifN': 'SIGNAL',    # ⭐ NOUVEAU : Commence après le signal peptide
+                    'cleavageMotifC': site.motif,  # ⭐ NOUVEAU : Se termine au site PCSK5/6/7
+                    'cleavageMotif': site.motif,   # Compatibilité
+                    'bioactivityScore': 0.0,
+                    'bioactivitySource': 'none',
+                    'peptideType': 'prodomain',
+                    'cleavedBy': 'PCSK5/6/7'
+                })
+                
+                print(f"   📦 Prodomain: {len(prodomain_seq)} aa")
+                print(f"      N-term motif: SIGNAL")
+                print(f"      C-term motif: {site.motif}")
+        
+        print(f"✅ PCSK5/6/7 extracted: {len(peptides)} peptide(s)")
         
         return peptides
     
@@ -103,12 +203,7 @@ class PeptideExtractor:
         """
         Extraction ultra-permissive OPTIMISÉE
         
-        ⭐ NOUVEAU : 
-        - INCLUT le RF/RY terminal dans le peptide
-        - MIN_CONFIDENCE = 30 (au lieu de 15)
-        - MAX_PEPTIDES = 50 (au lieu de 200)
-        - Filtre anti-doublons (overlap > 70%)
-        - Priorité aux peptides courts (5-30 aa)
+        ⭐ NOUVEAU : Capture motifs N et C terminal
         """
         peptides = []
         
@@ -119,12 +214,10 @@ class PeptideExtractor:
         
         sorted_sites = sorted(cleavage_sites, key=lambda s: s.index)
         
-        # ⭐ FILTRE 1 : Limites
-        MAX_DISTANCE = 100  # Maximum 100 aa entre deux sites
-        MAX_LENGTH = 50     # Peptides > 50 aa sont trop longs
-        MIN_CONFIDENCE = 30 # Score minimum (au lieu de 15)
+        MAX_DISTANCE = 100
+        MAX_LENGTH = 50
+        MIN_CONFIDENCE = 30
         
-        # Extraire peptides entre chaque paire de sites
         for i in range(len(sorted_sites)):
             for j in range(i + 1, len(sorted_sites)):
                 site_start = sorted_sites[i]
@@ -132,18 +225,13 @@ class PeptideExtractor:
                 
                 start_pos = site_start.position
                 
-                # ⭐ CRITIQUE : Pour les motifs RFamide, INCLURE le RF terminal
                 if 'RF' in site_end.motif or 'RY' in site_end.motif:
-                    # Le peptide va jusqu'à la FIN du motif RF/RY
-                    end_pos = site_end.position  # Après le RF
-                    print(f"   🎯 RFamide peptide: including terminal {site_end.motif}")
+                    end_pos = site_end.position
                 else:
-                    # Peptide standard : s'arrête au DÉBUT du motif
                     end_pos = site_end.index
                 
                 peptide_length = end_pos - start_pos
                 
-                # ⭐ FILTRE : Distance et longueur
                 if peptide_length > MAX_DISTANCE or peptide_length > MAX_LENGTH:
                     continue
                 
@@ -152,7 +240,6 @@ class PeptideExtractor:
                 
                 peptide_seq = sequence[start_pos:end_pos]
                 
-                # Calculer score de confiance
                 confidence = PeptideExtractor._calculate_confidence(
                     peptide_seq,
                     site_start,
@@ -160,30 +247,29 @@ class PeptideExtractor:
                     peptide_length
                 )
                 
-                # ⭐ FILTRE 2 : Confidence minimum = 30
                 if confidence < MIN_CONFIDENCE:
                     continue
                 
                 peptides.append({
                     'sequence': peptide_seq,
-                    'start': start_pos + 1,  # ⭐ CORRIGÉ : Convertir en 1-indexed
+                    'start': start_pos + 1,
                     'end': end_pos,
                     'length': peptide_length,
                     'inRange': config.OPTIMAL_PEPTIDE_MIN_LENGTH <= peptide_length <= config.OPTIMAL_PEPTIDE_MAX_LENGTH,
-                    'cleavageMotif': PeptideExtractor._get_cleavage_label(site_start, site_end),
+                    'cleavageMotifN': site_start.motif,  # ⭐ NOUVEAU
+                    'cleavageMotifC': site_end.motif,    # ⭐ NOUVEAU
+                    'cleavageMotif': PeptideExtractor._get_cleavage_label(site_start, site_end),  # Compatibilité
                     'bioactivityScore': 0.0,
                     'bioactivitySource': 'none',
                     'confidenceScore': confidence,
                     'confidenceBadge': PeptideExtractor._get_confidence_badge(confidence)
                 })
         
-        # ⭐ FILTRE 3 : Anti-doublons (éliminer peptides qui se chevauchent > 70%)
         peptides = PeptideExtractor._remove_overlapping_peptides(peptides)
         
-        # ⭐ FILTRE 4 : Trier et limiter à top 50
         peptides.sort(key=lambda p: (
-            p['confidenceScore'],  # Priorité 1 : Score
-            -p['length']          # Priorité 2 : Plus court = mieux
+            p.get('confidenceScore', 0),
+            -p['length']
         ), reverse=True)
         
         MAX_PEPTIDES = 50
@@ -193,7 +279,7 @@ class PeptideExtractor:
         
         print(f"✅ Ultra-permissive extracted: {len(peptides)} peptides")
         if len(peptides) > 0:
-            print(f"   Top confidence: {peptides[0]['confidenceScore']}")
+            print(f"   Top confidence: {peptides[0].get('confidenceScore', 0)}")
             print(f"   Top peptide: {peptides[0]['sequence'][:30]}...")
         
         return peptides
@@ -207,19 +293,16 @@ class PeptideExtractor:
         if len(peptides) <= 1:
             return peptides
         
-        # Trier par score (meilleurs d'abord)
-        sorted_peptides = sorted(peptides, key=lambda p: p['confidenceScore'], reverse=True)
+        sorted_peptides = sorted(peptides, key=lambda p: p.get('confidenceScore', 0), reverse=True)
         
         filtered = []
         
         for peptide in sorted_peptides:
-            # Vérifier si ce peptide chevauche un peptide déjà gardé
             is_overlapping = False
             
             for kept_peptide in filtered:
                 overlap = PeptideExtractor._calculate_overlap(peptide, kept_peptide)
                 
-                # Si chevauchement > 70%, on ignore ce peptide
                 if overlap > 0.7:
                     is_overlapping = True
                     print(f"   🚫 Removing overlapping: {peptide['sequence'][:20]}... (overlap {overlap:.0%})")
@@ -240,16 +323,13 @@ class PeptideExtractor:
         start1, end1 = pep1['start'], pep1['end']
         start2, end2 = pep2['start'], pep2['end']
         
-        # Pas de chevauchement
         if end1 <= start2 or end2 <= start1:
             return 0.0
         
-        # Calculer la zone de chevauchement
         overlap_start = max(start1, start2)
         overlap_end = min(end1, end2)
         overlap_length = overlap_end - overlap_start
         
-        # Chevauchement par rapport au plus petit peptide
         min_length = min(end1 - start1, end2 - start2)
         
         return overlap_length / min_length if min_length > 0 else 0.0
@@ -263,26 +343,21 @@ class PeptideExtractor:
     ) -> int:
         """
         Calcule le score de confiance (0-100)
-        
-        ⭐ MODIFIÉ : Bonus pour peptides courts et RFamide
         """
         score = 0
         
-        # 1. Type de clivage N-terminal (15-50 pts)
         start_motif = site_start.motif
-        if '...' in start_motif:  # RFamide
+        if '...' in start_motif:
             score += 50
-        elif start_motif in ['KK', 'KR', 'RR', 'RK']:  # Dibasic classique
+        elif start_motif in ['KK', 'KR', 'RR', 'RK']:
             score += 50
-        else:  # Single basic
+        else:
             score += 15
         
-        # 2. Type de clivage C-terminal (0-50 pts)
         end_motif = site_end.motif
-        if '...' in end_motif:  # RFamide C-term
+        if '...' in end_motif:
             score += 50
         
-        # 3. Motif terminal (0-30 pts)
         terminal_motif = PeptideExtractor._get_terminal_motif(peptide_seq)
         if terminal_motif in ['RF', 'RY', 'RFG', 'RYG']:
             score += 30
@@ -290,22 +365,19 @@ class PeptideExtractor:
         elif terminal_motif == 'G':
             score += 15
         
-        # 4. Longueur optimale (0-20 pts) ⭐ BONUS POUR COURTS
         if 5 <= length <= 15:
-            score += 20  # Peptides courts = meilleurs
+            score += 20
         elif 15 < length <= 30:
             score += 10
         elif 30 < length <= 50:
             score += 5
         elif length > 100:
-            score -= 30  # Pénalité pour trop longs
+            score -= 30
         
-        # Bonus RFamide (garantir score minimum 90)
         if '...' in start_motif or '...' in end_motif:
             score = max(score, 90)
             print(f"      🎯 RFamide bonus: minimum score 90")
         
-        # Plafonner à 100
         final_score = min(max(score, 0), 100)
         
         return final_score
@@ -316,13 +388,11 @@ class PeptideExtractor:
         if len(sequence) < 2:
             return 'none'
         
-        # Vérifier les 3 derniers aa pour RFG/RYG
         if len(sequence) >= 3:
             last_three = sequence[-3:]
             if last_three in ['RFG', 'RYG']:
                 return last_three
         
-        # Vérifier les 2 derniers aa pour RF/RY
         last_two = sequence[-2:]
         if last_two in ['RF', 'RY']:
             return last_two
@@ -333,7 +403,7 @@ class PeptideExtractor:
     
     @staticmethod
     def _get_cleavage_label(site_start: CleavageSite, site_end: CleavageSite) -> str:
-        """Génère label pour le motif de clivage"""
+        """Génère label pour le motif de clivage (compatibilité)"""
         if '...' in site_start.motif:
             return site_start.motif
         if '...' in site_end.motif:

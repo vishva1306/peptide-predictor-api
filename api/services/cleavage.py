@@ -1,4 +1,4 @@
-"""Détection des sites de clivage PCSK1/3"""
+"""Détection des sites de clivage PCSK1/3 et PCSK5/6/7"""
 import regex
 import re
 from typing import List
@@ -18,14 +18,23 @@ class CleavageDetector:
         """
         Détecte les sites de clivage
         
-        STRICT: Applique toutes les contraintes (espacement minimum)
-        PERMISSIVE: Détecte TOUS les sites sans vérifier l'espacement
-        ULTRA-PERMISSIVE: Single basic + RF-amide priority scan
+        Modes:
+        - strict: PCSK1/2 avec contraintes
+        - permissive: PCSK1/2 sans contraintes  
+        - ultra-permissive: Single basic + RF-amide
+        - pcsk567: R-X-(K/R)-R pour PCSK5/6/7 ⭐ NOUVEAU
         """
         
         if mode == "ultra-permissive":
             return CleavageDetector._find_ultra_permissive_sites(
                 sequence, 
+                signal_length
+            )
+        
+        # ⭐ NOUVEAU : Mode PCSK5/6/7
+        if mode == "pcsk567":
+            return CleavageDetector._find_pcsk567_sites(
+                sequence,
                 signal_length
             )
         
@@ -65,6 +74,54 @@ class CleavageDetector:
         except regex.error as e:
             print(f"Erreur regex: {e}")
             return []
+        
+        return sites
+    
+    # ⭐ NOUVEAU : Détection PCSK5/6/7
+    @staticmethod
+    def _find_pcsk567_sites(
+        sequence: str,
+        signal_length: int
+    ) -> List[CleavageSite]:
+        """
+        Détection des sites PCSK5/6/7
+        
+        Motif : R-X-(K/R)-R
+        - R : Arginine
+        - X : N'importe quel acide aminé
+        - (K/R) : Lysine ou Arginine
+        - R : Arginine
+        
+        Exemples : RSKR, RKRR, RVRR, RARR, RHRR, etc.
+        
+        Note : Ces sites sont souvent uniques et en C-terminal
+        """
+        sites = []
+        
+        pattern = config.get_regex_pattern("pcsk567")  # R[A-Z](?:K|R)R
+        search_region = sequence[signal_length:]
+        
+        print(f"\n🔬 PCSK5/6/7 scan on {len(search_region)} aa (after signal peptide)")
+        print(f"   Pattern: {pattern}")
+        
+        for match in re.finditer(pattern, search_region):
+            absolute_position = signal_length + match.start()
+            motif = match.group()
+            
+            # Le clivage se fait APRÈS le motif R-X-K/R-R
+            # Donc position = début du motif + 4 (longueur du motif)
+            cleavage_position = absolute_position + 4
+            
+            site = CleavageSite(
+                position=cleavage_position,
+                motif=motif,
+                index=absolute_position
+            )
+            sites.append(site)
+            
+            print(f"   ✅ Found {motif} at position {absolute_position + 1} → cleavage after position {cleavage_position}")
+        
+        print(f"🔬 PCSK5/6/7 sites found: {len(sites)}")
         
         return sites
     

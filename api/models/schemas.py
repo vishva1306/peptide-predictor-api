@@ -9,7 +9,7 @@ class AnalysisRequest(BaseModel):
         None, 
         description="UniProt accession (single: 'P01189' or batch: ['P01189', 'P01308'])"
     )
-    mode: Literal["strict", "permissive", "ultra-permissive"] = Field(default="strict")
+    mode: Literal["strict", "permissive", "ultra-permissive", "pcsk567"] = Field(default="strict")
     signalPeptideLength: int = Field(default=config.DEFAULT_SIGNAL_PEPTIDE_LENGTH, ge=10, le=50)
     minCleavageSites: int = Field(default=config.DEFAULT_MIN_CLEAVAGE_SITES, ge=2, le=10)
     minCleavageSpacing: int = Field(default=config.DEFAULT_MIN_CLEAVAGE_SPACING, ge=1, le=20)
@@ -21,7 +21,6 @@ class AnalysisRequest(BaseModel):
         if v is None:
             raise ValueError("proteinId is required")
         
-        # Si c'est une liste, vérifier la limite
         if isinstance(v, list):
             if len(v) == 0:
                 raise ValueError("proteinId list cannot be empty")
@@ -56,7 +55,10 @@ class PeptideResult(BaseModel):
     end: int
     length: int
     inRange: bool
-    cleavageMotif: str
+    # ⭐ NOUVEAU : Deux motifs de clivage
+    cleavageMotifN: Optional[str] = None  # Motif N-terminal (début du peptide)
+    cleavageMotifC: Optional[str] = None  # Motif C-terminal (fin du peptide)
+    cleavageMotif: str  # ⭐ GARDÉ pour compatibilité (= cleavageMotifC)
     bioactivityScore: float = Field(ge=0, le=100)
     bioactivitySource: Literal["api", "heuristic", "none"]
     uniprotStatus: Literal["exact", "partial", "unknown"] = "unknown"
@@ -65,6 +67,8 @@ class PeptideResult(BaseModel):
     uniprotAccession: Optional[str] = None
     ptms: List[PTMResult] = []
     modifiedSequence: Optional[str] = None
+    peptideType: Optional[str] = None
+    cleavedBy: Optional[str] = None
 
 class AnalysisResponse(BaseModel):
     """Résultat d'analyse - Single"""
